@@ -191,9 +191,13 @@ def _refine_offset(h: LaneHistory, onset_frame: int, offset_frame: int,
         tsa = np.array(ts); ysa = np.array(ys)
         A = np.vstack([tsa - tsa[0], np.ones_like(tsa)]).T
         (slope, intercept), *_ = np.linalg.lstsq(A, ysa, rcond=None)
+        last_t = h.times[min(offset_frame, len(h.times) - 1)]
+        frame_dt = (h.times[-1] - h.times[0]) / max(1, len(h.times) - 1)
         if slope > 1e-3:
             t_cross = tsa[0] + (strike - intercept) / slope
-            if t_cross > onset:
+            # the trailing edge crosses at ~offset_frame; a wildly larger value
+            # means a near-flat (degenerate) fit -> fall back to the frame time.
+            if onset < t_cross <= last_t + 3 * frame_dt:
                 resid = float(np.sqrt(np.mean((A @ [slope, intercept] - ysa) ** 2)))
                 return float(t_cross), float(np.clip(0.9 - resid / 20, 0.5, 0.95)), flags
     # trailing edge never seen crossing (note runs past video end / occluded)

@@ -108,7 +108,8 @@ def analyze(video_path: str, opts: Options,
                      f"{len(geom.lanes)} lanes, conf {geom.confidence:.2f}",
           "progress": 0.06})
 
-    roll_hsv = [cv2.cvtColor(f[:int(geom.strike_y), :, :], cv2.COLOR_BGR2HSV)
+    roll_cut = max(1, int(geom.strike_y) - max(3, int(round(geom.strike_y * 0.008))))
+    roll_hsv = [cv2.cvtColor(f[:roll_cut, :, :], cv2.COLOR_BGR2HSV)
                 for f in sample_frames]
     theme = detect_theme(roll_hsv)
     prog({"stage": "theme",
