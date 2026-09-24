@@ -108,7 +108,7 @@ def stream_frames(
     if end is not None:
         cmd += ["-t", f"{max(0.0, end - start):.6f}"]
     if vf:
-        cmd += ["-vf", ",".join(vf), "-vsync", "0"]
+        cmd += ["-vf", ",".join(vf), "-fps_mode", "passthrough"]
     cmd += ["-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
 
     frame_bytes = w * h * 3
