@@ -1,0 +1,14 @@
+node_modules/
+.next/
+__pycache__/
+*.pyc
+.venv/
+engine/.venv/
+data/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.wav
+out/
+.DS_Store
