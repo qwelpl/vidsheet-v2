@@ -42,7 +42,7 @@ class LaneSampler:
 
     def __init__(self, geom: KeyboardGeometry, theme: ThemeModel,
                  column_frac: float = 1.0, min_run_px: int = 2,
-                 min_fill: float = 0.35, center_fill: float = 0.5):
+                 min_fill: float = 0.35, center_fill: float = 0.72):
         self.geom = geom
         self.theme = theme
         self.column_frac = column_frac

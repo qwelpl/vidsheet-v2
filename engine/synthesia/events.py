@@ -49,17 +49,36 @@ class HistoryCollector:
 
 
 def estimate_fall_speed(hist: dict[int, LaneHistory], geom: KeyboardGeometry) -> float:
-    """Median leading-edge speed (px/s) over clean approach segments."""
+    """Median leading-edge speed (px/s), fitted over each contiguous approach
+    segment. Fitting over a long baseline avoids the bias that per-frame integer
+    pixel deltas introduce."""
     strike = float(geom.strike_y)
+    band = max(6.0, strike * 0.02)
     speeds = []
     for h in hist.values():
-        for k in range(1, len(h.times)):
-            y0 = max(r.y_bottom for r in h.runs[k - 1])
-            y1 = max(r.y_bottom for r in h.runs[k])
-            dt = h.times[k] - h.times[k - 1]
-            if 0 < dt and 0 < (y1 - y0) < strike * 0.3 and y1 < strike - 2:
-                speeds.append((y1 - y0) / dt)
+        seg_t, seg_y = [], []
+        prev = None
+        for k in range(len(h.times)):
+            yb = max(r.y_bottom for r in h.runs[k])
+            cont = (prev is not None and 0 <= yb - prev < strike * 0.15)
+            if yb < strike - band and cont:
+                seg_t.append(h.times[k]); seg_y.append(yb)
+            else:
+                if len(seg_t) >= 5:
+                    speeds.append(_slope(seg_t, seg_y))
+                seg_t, seg_y = ([h.times[k]], [yb]) if yb < strike - band else ([], [])
+            prev = yb
+        if len(seg_t) >= 5:
+            speeds.append(_slope(seg_t, seg_y))
+    speeds = [s for s in speeds if s > 1]
     return float(np.median(speeds)) if speeds else strike * 0.5
+
+
+def _slope(ts, ys) -> float:
+    ts = np.asarray(ts, float); ys = np.asarray(ys, float)
+    A = np.vstack([ts - ts[0], np.ones_like(ts)]).T
+    (slope, _), *_ = np.linalg.lstsq(A, ys, rcond=None)
+    return float(slope)
 
 
 def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,

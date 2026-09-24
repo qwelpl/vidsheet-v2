@@ -180,10 +180,17 @@ def demo_piece() -> list[SynthNote]:
               (84, 3.3, 4.0)]
     for m, s, e in melody:
         N.append(SynthNote(m, s + 1.0, e + 1.0, "right", 100))
-    # fast 16th run (right hand)
+    # fast 16th run (right hand) incl. black keys
     base = 5.2
     for i, m in enumerate([72, 74, 76, 77, 79, 81, 83, 84]):
         N.append(SynthNote(m, base + i * 0.08, base + i * 0.08 + 0.07, "right", 95))
+    # black-key passage (right hand) + a black-key chord (left) to exercise
+    # accidentals and guard against over-suppressing real black keys
+    chrom = [61, 63, 66, 68, 70, 73, 75, 78]  # C#4 D#4 F#4 G#4 A#4 C#5 D#5 F#5
+    for i, m in enumerate(chrom):
+        N.append(SynthNote(m, 6.0 + i * 0.25, 6.0 + i * 0.25 + 0.22, "right", 88))
+    for m in (42, 46, 49):  # F#2 A#2 C#3 sustained triad (left, all black)
+        N.append(SynthNote(m, 8.2, 9.1, "left", 66))
     return N
 
 
