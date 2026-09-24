@@ -5,6 +5,9 @@ import { fmtTime, confidenceTone } from "@/lib/render";
 import PianoRoll from "./PianoRoll";
 import ReconView from "./ReconView";
 import Inspector from "./Inspector";
+import { PianoSynth } from "@/lib/synth";
+
+type AudioMode = "original" | "reconstruction" | "mute";
 
 type Mode = "original" | "reconstruction" | "split" | "overlay" | "difference";
 
@@ -22,6 +25,10 @@ export default function Workspace({ jobId, project, onExit }: { jobId: string; p
   const [pxPerSec, setPxPerSec] = useState(90);
   const [scrollX, setScrollX] = useState(0);
   const [exportOpen, setExportOpen] = useState(false);
+  const [audioMode, setAudioMode] = useState<AudioMode>("original");
+  const synth = useRef<PianoSynth | null>(null);
+  const prevT = useRef(0);
+  const notesRef = useRef<Note[]>(project.notes);
 
   // editable notes with undo/redo (§26, §60)
   const [notes, setNotes] = useState<Note[]>(project.notes);
@@ -55,12 +62,34 @@ export default function Workspace({ jobId, project, onExit }: { jobId: string; p
     if (nxt) { undo.current.push(notes); setNotes(nxt); }
   }, [notes]);
 
-  // playback clock
+  useEffect(() => { notesRef.current = notes; }, [notes]);
+  const audioRef = useRef<AudioMode>(audioMode);
+  const speedRef = useRef(speed);
+  useEffect(() => { audioRef.current = audioMode; }, [audioMode]);
+  useEffect(() => { speedRef.current = speed; }, [speed]);
+
+  // playback clock — also schedules reconstruction synth voices in sync (§46)
   useEffect(() => {
+    if (!synth.current) synth.current = new PianoSynth();
     let raf = 0;
     const tick = () => {
       const v = video.current;
-      if (v) setTime(v.currentTime);
+      if (v) {
+        const t = v.currentTime;
+        if (audioRef.current === "reconstruction" && !v.paused) {
+          const p = prevT.current;
+          const dt = t - p;
+          if (dt > 0 && dt < 0.5) {  // forward, not a seek
+            for (const n of notesRef.current) {
+              if (n.start > p && n.start <= t) {
+                synth.current!.noteOn(n.midi, n.velocity, n.duration / speedRef.current);
+              }
+            }
+          }
+        }
+        prevT.current = t;
+        setTime(t);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -69,21 +98,34 @@ export default function Workspace({ jobId, project, onExit }: { jobId: string; p
 
   useEffect(() => { if (video.current) video.current.playbackRate = speed; }, [speed]);
 
+  // route audio: original = video sound, reconstruction/mute = silence video
+  useEffect(() => {
+    const v = video.current;
+    if (v) v.muted = audioMode !== "original";
+    if (audioMode === "reconstruction") synth.current?.resume();
+    else synth.current?.allOff();
+  }, [audioMode]);
+
   const togglePlay = useCallback(() => {
     const v = video.current; if (!v) return;
-    if (v.paused) { v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
+    if (v.paused) { prevT.current = v.currentTime; v.play(); setPlaying(true); }
+    else { v.pause(); setPlaying(false); synth.current?.allOff(); }
   }, []);
 
   const seek = useCallback((t: number) => {
     const v = video.current; if (!v) return;
     v.currentTime = Math.max(0, Math.min(duration, t));
+    prevT.current = v.currentTime;
+    synth.current?.allOff();
     setTime(v.currentTime);
   }, [duration]);
 
   const step = useCallback((frames: number) => {
     const v = video.current; if (!v) return;
     v.pause(); setPlaying(false);
+    synth.current?.allOff();
     v.currentTime = Math.max(0, Math.min(duration, v.currentTime + frames / fps));
+    prevT.current = v.currentTime;
   }, [duration, fps]);
 
   // keyboard shortcuts (§26)
@@ -205,6 +247,12 @@ export default function Workspace({ jobId, project, onExit }: { jobId: string; p
         </span>
         <input type="range" min={0} max={duration} step={0.001} value={time}
           onChange={(e) => seek(+e.target.value)} style={{ flex: 1 }} />
+        <span className="label">Audio</span>
+        <div className="seg" title="Listen to the original soundtrack or the reconstructed notes">
+          {([["original", "Original"], ["reconstruction", "Reconstruction"], ["mute", "Mute"]] as [AudioMode, string][]).map(([m, label]) => (
+            <button key={m} className={audioMode === m ? "active" : ""} onClick={() => setAudioMode(m)}>{label}</button>
+          ))}
+        </div>
         <span className="label">Speed</span>
         <div className="seg">
           {[0.25, 0.5, 1, 2].map((s) => (
