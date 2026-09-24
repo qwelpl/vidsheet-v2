@@ -31,7 +31,15 @@ export default function ReconView({ project, notes, time, transparent, opacity =
     const ctx = cv.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    const sx = W / geom.width, sy = H / geom.height;
+
+    // Letterbox to the source aspect ratio exactly like the <video> element's
+    // object-fit: contain, so a single uniform scale keeps the reconstruction
+    // undistorted and pixel-aligned for overlay/difference (§29).
+    const s = Math.min(W / geom.width, H / geom.height);
+    const ox = (W - geom.width * s) / 2;
+    const oy = (H - geom.height * s) / 2;
+    const X = (px: number) => ox + px * s;
+    const Y = (py: number) => oy + py * s;
 
     if (!transparent) {
       ctx.fillStyle = "#0a0b0e";
@@ -39,55 +47,77 @@ export default function ReconView({ project, notes, time, transparent, opacity =
     }
     ctx.globalAlpha = opacity;
 
-    // falling note bars
+    const strike = Y(geom.strike_y);
+    const kbBottom = Y(geom.keyboard_bottom);
+    const kbH = kbBottom - strike;
+
+    // falling note bars (clipped to the roll area above the strike line)
     for (const n of notes) {
       const span = noteBarAt(n, geom, v, time);
       if (!span) continue;
       const lane = lanes.get(n.midi);
       if (!lane) continue;
-      const x0 = (lane.center - lane.half_width) * sx;
-      const x1 = (lane.center + lane.half_width) * sx;
-      const yt = span[0] * sy, yb = span[1] * sy;
+      const x0 = X(lane.center - lane.half_width);
+      const x1 = X(lane.center + lane.half_width);
+      const yt = Y(span[0]), yb = Y(span[1]);
       const c = HAND_COLOR[n.hand];
+      const w = Math.max(1, x1 - x0), h = Math.max(1, yb - yt);
       if (!transparent) {
-        ctx.fillStyle = c + "22";
-        ctx.fillRect(x0 - 2, yt, x1 - x0 + 4, yb - yt);
+        ctx.fillStyle = c + "20";
+        ctx.fillRect(x0 - 2, yt, w + 4, h);
       }
       ctx.fillStyle = n.id === selectedId ? "#ffffff" : c;
-      ctx.fillRect(x0, yt, Math.max(1, x1 - x0), Math.max(1, yb - yt));
+      roundRect(ctx, x0, yt, w, h, Math.min(3, w / 3));
+      ctx.fill();
+      // brighter leading edge
+      ctx.fillStyle = "#ffffff40";
+      ctx.fillRect(x0, yb - Math.min(3, h), w, Math.min(3, h));
       if (transparent) {
-        ctx.strokeStyle = c; ctx.lineWidth = 1;
-        ctx.strokeRect(x0, yt, Math.max(1, x1 - x0), Math.max(1, yb - yt));
+        ctx.strokeStyle = n.id === selectedId ? "#fff" : c;
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(x0 + 0.5, yt + 0.5, w - 1, h - 1);
       }
     }
 
-    // keyboard + strike line
-    const strike = geom.strike_y * sy;
     if (!transparent) {
-      ctx.fillStyle = "#f2f2f4";
-      ctx.fillRect(0, strike, W, H - strike);
+      // keyboard bed
+      ctx.fillStyle = "#eceef2";
+      ctx.fillRect(X(0), strike, geom.width * s, kbH);
+      // white-key separators
+      ctx.strokeStyle = "#c3c7d0"; ctx.lineWidth = 1;
       for (const l of geom.lanes) {
-        if (isBlack(l.midi)) {
-          const x0 = (l.center - l.half_width) * sx;
-          const x1 = (l.center + l.half_width) * sx;
-          ctx.fillStyle = "#141414";
-          ctx.fillRect(x0, strike, x1 - x0, (geom.keyboard_bottom - geom.keyboard_top) * sy * 0.62);
+        if (!isBlack(l.midi)) {
+          const xl = X(l.center - l.half_width);
+          ctx.beginPath(); ctx.moveTo(xl, strike); ctx.lineTo(xl, kbBottom); ctx.stroke();
         }
       }
-      // key-press highlight for sounding notes (§55)
+      // sounding white keys highlighted (§55)
       for (const n of notes) {
-        if (n.start <= time && time < n.end) {
-          const l = lanes.get(n.midi);
-          if (!l) continue;
-          ctx.fillStyle = HAND_COLOR[n.hand] + "cc";
-          ctx.fillRect((l.center - l.half_width) * sx, strike + 1,
-            l.half_width * 2 * sx, (H - strike) - 2);
+        if (n.start <= time && time < n.end && !isBlack(n.midi)) {
+          const l = lanes.get(n.midi); if (!l) continue;
+          ctx.fillStyle = HAND_COLOR[n.hand] + "55";
+          ctx.fillRect(X(l.center - l.half_width), strike + 1, l.half_width * 2 * s, kbH - 1);
         }
       }
+      // black keys on top (shorter), rounded bottoms
+      const blackH = kbH * 0.62;
+      for (const l of geom.lanes) {
+        if (!isBlack(l.midi)) continue;
+        const x0 = X(l.center - l.half_width), w = l.half_width * 2 * s;
+        const sounding = notes.some((n) => n.midi === l.midi && n.start <= time && time < n.end);
+        ctx.fillStyle = sounding ? HAND_COLOR[notes.find((n) => n.midi === l.midi)!.hand] : "#161820";
+        roundRect(ctx, x0, strike, w, blackH, Math.min(2.5, w / 3), true);
+        ctx.fill();
+      }
+      // top rim of keyboard
+      ctx.fillStyle = "#d0d3da";
+      ctx.fillRect(X(0), strike, geom.width * s, Math.max(1, kbH * 0.03));
     }
-    ctx.strokeStyle = "#e0a52a"; ctx.lineWidth = 1;
+
+    // strike line
+    ctx.strokeStyle = "#e0a52a"; ctx.lineWidth = 1.5;
     ctx.globalAlpha = opacity * 0.9;
-    ctx.beginPath(); ctx.moveTo(0, strike); ctx.lineTo(W, strike); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(X(0), strike); ctx.lineTo(X(geom.width), strike); ctx.stroke();
     ctx.globalAlpha = 1;
   }, [project, notes, time, transparent, opacity, selectedId, geom, v]);
 
@@ -103,4 +133,26 @@ export default function ReconView({ project, notes, time, transparent, opacity =
       <canvas ref={ref} style={{ display: "block" }} />
     </div>
   );
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number,
+  w: number, h: number, r: number, bottomOnly = false) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  if (bottomOnly) {
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + w, y);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h);
+    ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.closePath();
+  } else {
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
 }
