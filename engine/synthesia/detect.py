@@ -52,10 +52,14 @@ class LaneSampler:
         self.roll_top = 0
         self.strike_y = int(round(geom.strike_y))
         self.bridge_px = max(3, int(round(geom.strike_y * 0.02)))
+        # exclude a thin strip just above the strike line: many renderers draw a
+        # coloured strike line / hit-flash there that would otherwise register as
+        # a note in every lane on sparse clips.
+        self.roll_bottom = max(1, self.strike_y - max(3, int(round(geom.strike_y * 0.008))))
 
     def observe(self, index: int, time: float, bgr: np.ndarray) -> FrameObservation:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        roll = hsv[self.roll_top: self.strike_y, :, :]
+        roll = hsv[self.roll_top: self.roll_bottom, :, :]
         rh = roll.shape[0]
         runs: dict[int, list[LaneRun]] = {}
         for midi, lane in self.geom.lanes.items():
