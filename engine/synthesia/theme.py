@@ -84,6 +84,12 @@ def detect_theme(
 
     S = np.concatenate(sats)
     V = np.concatenate(vals)
+    # Solid note cores are markedly brighter than translucent glow, which shares
+    # the same hue/saturation (uniform RGB scaling) and differs only in value.
+    # Glow sits well below the bright-core level, so a threshold at half the
+    # core brightness keeps cores and rejects glow (§34).
+    core_level = float(np.percentile(V, 92))
+    val_min = int(np.clip(max(val_min, 0.55 * core_level), 90, 210))
     hist = np.bincount(H, minlength=180).astype(np.float64)
     hist = cv2.GaussianBlur(hist.reshape(1, -1), (1, 9), 0).ravel()
 
@@ -111,7 +117,27 @@ def detect_theme(
             weight=weight,
         ))
     clusters.sort(key=lambda c: -c.weight)
-    return ThemeModel(clusters=clusters, sat_min=sat_min, val_min=val_min)
+    # drop negligible clusters (compression fringe, particle tints) but always
+    # keep at least the two dominant hand colours if present.
+    kept = [c for i, c in enumerate(clusters) if i < 2 or c.weight >= 0.15]
+    return ThemeModel(clusters=kept, sat_min=sat_min, val_min=val_min)
+
+
+def _otsu_threshold(v: np.ndarray) -> int:
+    """Otsu split of the value histogram (glow vs core). Biased toward the core
+    side so faint glow tails stay excluded."""
+    if v.size < 50:
+        return 90
+    hist = np.bincount(v.astype(np.int32).clip(0, 255), minlength=256).astype(np.float64)
+    total = hist.sum()
+    omega = np.cumsum(hist)
+    mu = np.cumsum(hist * np.arange(256))
+    mu_t = mu[-1]
+    denom = omega * (total - omega)
+    denom[denom == 0] = 1e-9
+    sigma_b = (mu_t * omega - mu) ** 2 / denom
+    thr = int(np.argmax(sigma_b))
+    return int(np.clip(thr, 60, 180))
 
 
 def _hue_peaks(hist: np.ndarray, min_sep: int, max_peaks: int) -> list[int]:

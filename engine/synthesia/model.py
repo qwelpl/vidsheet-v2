@@ -88,6 +88,7 @@ class NoteEvent:
     # provenance
     source_frames: list[int] = field(default_factory=list)
     track_id: Optional[int] = None
+    color_cluster: Optional[int] = None  # theme colour cluster (hand hint, §16)
     lane_x: Optional[float] = None  # sub-pixel horizontal centre in the roll
     verification: VerificationStatus = VerificationStatus.UNVERIFIED
     manually_corrected: bool = False

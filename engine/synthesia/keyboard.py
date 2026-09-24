@@ -121,36 +121,34 @@ def temporal_median(frames: list[np.ndarray]) -> np.ndarray:
 
 
 def detect_keyboard_band(gray: np.ndarray) -> tuple[int, int]:
-    """Find the vertical extent of the keyboard.
+    """Find the vertical extent of the keyboard (§5 bottom-keyboard case).
 
-    Keyboard rows are bright (white keys) and rich in vertical edges (key
-    separators + black keys). We score each row and take the tallest bright,
-    high-edge band in the lower half of the frame (§5 bottom-keyboard case)."""
+    On a temporal-median frame the falling-note roll averages to a dark
+    background while the keyboard stays a bright, contiguous block at the
+    bottom. We therefore walk upward from the last row through the connected
+    bright region: the keyboard body (white keys, with black keys interleaved)
+    stays bright until the dark roll begins."""
     h, w = gray.shape
-    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    edge_energy = np.abs(gx).mean(axis=1)
-    brightness = gray.mean(axis=1)
+    brightness = cv2.GaussianBlur(gray.mean(axis=1).reshape(-1, 1), (1, 1), 0).ravel()
+    brightness = np.convolve(brightness, np.ones(3) / 3, mode="same")
 
-    edge_n = edge_energy / (edge_energy.max() + 1e-6)
-    bright_n = brightness / 255.0
-    score = 0.5 * bright_n + 0.5 * edge_n
+    # brightness of the bottom-most rows anchors the "white key" level
+    kb_level = float(np.median(brightness[int(h * 0.95):]))
+    if kb_level < 90:  # bottom isn't bright -> keyboard may not be flush (rare)
+        kb_level = float(brightness.max())
+    thr = max(90.0, kb_level * 0.55)
 
-    # search lower 60% of the frame for the keyboard
-    lo = int(h * 0.40)
-    best = (lo, h - 1, -1.0)
-    thr = np.percentile(score[lo:], 55)
-    y = h - 1
-    while y >= lo:
-        if score[y] >= thr:
-            y2 = y
-            while y >= lo and score[y] >= thr * 0.75:
-                y -= 1
-            top = y + 1
-            band_score = float(score[top:y2 + 1].mean()) * (y2 - top)
-            if band_score > best[2]:
-                best = (top, y2, band_score)
-        y -= 1
-    return best[0], best[1]
+    bottom = h - 1
+    # ignore a possible thin dark border at the very bottom
+    while bottom > h * 0.5 and brightness[bottom] < thr:
+        bottom -= 1
+    top = bottom
+    while top > int(h * 0.30) and brightness[top - 1] >= thr:
+        top -= 1
+    # guard against absurdly thin detection
+    if bottom - top < h * 0.04:
+        top = max(int(h * 0.30), bottom - int(h * 0.16))
+    return top, bottom
 
 
 def _find_white_boundaries(strip: np.ndarray) -> np.ndarray:
@@ -181,15 +179,22 @@ def _find_white_boundaries(strip: np.ndarray) -> np.ndarray:
 
 
 def _has_black_between(upper: np.ndarray, x0: float, x1: float) -> bool:
-    """Is there a black key between two adjacent white-key centres? Look at the
-    upper keyboard region for a persistently dark column."""
-    a, b = int(round(x0)), int(round(x1))
-    if b - a < 3:
+    """Is there a black key between two adjacent white-key centres?
+
+    A black key is a *wide* dark block centred between the two white centres,
+    unlike the thin (1-2 px) separator line that also sits there when there is
+    no black key. We therefore test the mean brightness of the central band, not
+    the single darkest column (which the separator would always trip)."""
+    span = x1 - x0
+    if span < 4:
         return False
-    seg = upper[:, a:b].mean(axis=0)
-    darkest = seg.min()
-    surround = float(upper[:, max(0, a - 2):a + 1].mean() + upper[:, b:b + 3].mean()) / 2.0
-    return darkest < surround - 30 and darkest < 110
+    ca = int(round(x0 + 0.30 * span))
+    cb = int(round(x1 - 0.30 * span))
+    if cb <= ca:
+        ca, cb = int(round((x0 + x1) / 2)) - 1, int(round((x0 + x1) / 2)) + 2
+    central = float(upper[:, ca:cb].mean())
+    white_ref = float(np.percentile(upper, 85))  # white-key body brightness
+    return central < white_ref * 0.5
 
 
 def build_geometry(
@@ -264,76 +269,55 @@ def _geometry_confidence(gaps: list[bool], phase: int) -> float:
 
 
 def _assign_pitches(white_centers, white_hw, gaps, phase) -> dict[int, Lane]:
-    """Assign each white key a MIDI number from the matched phase, place black
-    keys between the appropriate white pairs (narrower, §6)."""
-    lanes: dict[int, Lane] = {}
-    # white key index 0 has octave position (phase). Choose an octave so the
-    # lowest key lands in a sane MIDI range; refined later against 88-key board.
+    """Assign each white key a MIDI number, then place black keys.
+
+    Relative semitone positions come straight from the gap pattern: adjacent
+    white keys differ by 2 semitones when a black key sits between them and by 1
+    otherwise. Phase only fixes which pitch class the first white key is. The
+    whole board is then transposed by whole octaves onto a standard range so
+    pitch classes are preserved but the octave is anchored (§6)."""
     n = len(white_centers)
-    # anchor: assume the board's lowest key sits around octave giving midi ~ 21+
-    # We compute white-key semitone offset from C, accumulate octaves.
-    base_octave = 2  # provisional; corrected by range clamp below
+    # cumulative relative semitones from the first white key
+    rel = [0]
+    for i in range(n - 1):
+        rel.append(rel[-1] + (2 if gaps[i] else 1))
+    first_pc = _WHITE_SEMITONES[phase % 7]
+
+    lanes: dict[int, Lane] = {}
+    base = 60  # provisional; corrected by transpose below
     for i in range(n):
-        pos = (i + phase) % 7
-        octave_advance = (i + phase) // 7
-        semitone = _WHITE_SEMITONES[pos]
-        midi = (base_octave + 1) * 12 + semitone + octave_advance * 12
+        midi = base + first_pc + rel[i]
         lanes[midi] = Lane(midi, float(white_centers[i]), float(white_hw), False)
-    # black keys
+    white_midis = list(lanes.keys())
     for i in range(n - 1):
         if not gaps[i]:
             continue
-        left_midi = _white_midi(i, phase, base_octave)
-        black_midi = left_midi + 1
+        black_midi = white_midis[i] + 1
         cx = (white_centers[i] + white_centers[i + 1]) / 2.0
         lanes[black_midi] = Lane(black_midi, float(cx), float(white_hw * 0.58), True)
 
-    # shift the whole board so the lowest key is a plausible piano key.
-    lo = min(lanes)
-    # snap lowest white key onto the nearest real piano key >= A0 (21)
-    target_lo = _nearest_playable_low(lanes)
-    shift = target_lo - lo
+    shift = _octave_transpose(min(lanes), max(lanes))
     if shift:
         lanes = {m + shift: Lane(m + shift, l.center, l.half_width, l.is_black)
                  for m, l in lanes.items()}
     return lanes
 
 
-def _white_midi(i: int, phase: int, base_octave: int) -> int:
-    pos = (i + phase) % 7
-    octave_advance = (i + phase) // 7
-    return (base_octave + 1) * 12 + _WHITE_SEMITONES[pos] + octave_advance * 12
-
-
-def _nearest_playable_low(lanes: dict[int, Lane]) -> int:
-    """Pick a lowest-MIDI so the board maps onto standard piano ranges. Common
-    boards: 88 (A0=21), 76 (E1=28), 61 (C2=36), 49 (C2), 25. We keep the
-    detected pitch classes and only translate by whole octaves."""
-    lo = min(lanes)
-    hi = max(lanes)
+def _octave_transpose(lo: int, hi: int) -> int:
+    """Whole-octave shift bringing [lo, hi] onto the piano (21..108), centred so
+    both ends sit inside range. Preserves pitch classes."""
     span = hi - lo
-    lo_pc = lo % 12
-    # candidate lowest keys for common boards with matching pitch class
-    candidates = [21, 28, 29, 36, 48]  # A0, E1, F1, C2, C3
-    best = lo
-    best_cost = 1e9
-    for cand in candidates:
-        if (cand % 12) != lo_pc and (cand % 12) != (lo_pc):
-            # allow octave translation to reach this pitch class
-            k = round((cand - lo) / 12.0)
-            trans = lo + k * 12
-            if trans % 12 != lo_pc:
-                continue
-            cand = trans
-        # only whole-octave translations keep pitch classes intact
-        if (cand - lo) % 12 != 0:
+    best_k, best_cost = 0, 1e18
+    for k in range(-10, 11):
+        nlo, nhi = lo + k * 12, hi + k * 12
+        if nlo < 21 or nhi > 108:
             continue
-        if cand < 21 or cand + span > 108:
-            continue
-        cost = abs(cand - 21) + abs((cand + span) - 108)
+        cost = abs(nlo - 21) + abs(108 - nhi)
         if cost < best_cost:
-            best_cost, best = cost, cand
-    return best
+            best_cost, best_k = cost, k
+    if best_cost == 1e18:  # board wider than 88 keys shouldn't happen; clamp low
+        best_k = round((21 - lo) / 12.0)
+    return best_k * 12
 
 
 def _fallback_88(w: int, h: int, kb_top: int, kb_bottom: int) -> KeyboardGeometry:

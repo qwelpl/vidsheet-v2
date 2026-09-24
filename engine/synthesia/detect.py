@@ -41,13 +41,17 @@ class LaneSampler:
     """Extracts :class:`FrameObservation` objects from frames."""
 
     def __init__(self, geom: KeyboardGeometry, theme: ThemeModel,
-                 column_frac: float = 0.5, min_run_px: int = 2):
+                 column_frac: float = 1.0, min_run_px: int = 2,
+                 min_fill: float = 0.35, center_fill: float = 0.5):
         self.geom = geom
         self.theme = theme
         self.column_frac = column_frac
         self.min_run_px = min_run_px
+        self.min_fill = min_fill
+        self.center_fill = center_fill
         self.roll_top = 0
         self.strike_y = int(round(geom.strike_y))
+        self.bridge_px = max(3, int(round(geom.strike_y * 0.02)))
 
     def observe(self, index: int, time: float, bgr: np.ndarray) -> FrameObservation:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
@@ -55,20 +59,29 @@ class LaneSampler:
         rh = roll.shape[0]
         runs: dict[int, list[LaneRun]] = {}
         for midi, lane in self.geom.lanes.items():
-            half = max(1.0, lane.half_width * self.column_frac)
-            x0 = int(round(lane.center - half))
-            x1 = int(round(lane.center + half)) + 1
-            x0 = max(0, x0)
-            x1 = min(roll.shape[1], x1)
-            if x1 <= x0:
+            half = max(1.5, lane.half_width * self.column_frac)
+            x0 = max(0, int(round(lane.center - half)))
+            x1 = min(roll.shape[1], int(round(lane.center + half)) + 1)
+            if x1 - x0 < 2:
                 continue
             col = roll[:, x0:x1, :]
-            # average the narrow window to suppress compression noise (§33)
-            hue = col[..., 0].astype(np.float32).mean(axis=1)
-            sat = col[..., 1].astype(np.float32).mean(axis=1)
-            val = col[..., 2].astype(np.float32).mean(axis=1)
-            mask = self._core_mask(hue, sat, val)
-            lane_runs = self._runs_from_mask(mask, hue, sat, val, rh)
+            hue = col[..., 0].astype(np.float32)
+            sat = col[..., 1].astype(np.float32)
+            val = col[..., 2].astype(np.float32)
+            mask2d = self._core_mask(hue, sat, val)   # H x Wwin bool
+            # Two gates decide a note is present in this lane, not a neighbour's
+            # bleed: (a) the lane *centre* must be covered — a neighbouring
+            # note's core edge never reaches the centre (§7); (b) enough of the
+            # whole lane width is covered to reject single-pixel noise (§34).
+            ci = int(round(lane.center)) - x0
+            c0 = max(0, ci - 1); c1 = min(mask2d.shape[1], ci + 2)
+            center = mask2d[:, c0:c1].mean(axis=1)
+            fill = mask2d.mean(axis=1)
+            row_active = (center >= self.center_fill) & (fill >= self.min_fill)
+            # bridge thin gaps (seams, glow occlusion, compression) so a single
+            # bar is not split; real repeated-note gaps are far larger (§12,§36)
+            row_active = self._bridge(row_active, self.bridge_px)
+            lane_runs = self._runs_from_mask(row_active, hue, sat, val, mask2d, rh)
             if lane_runs:
                 runs[midi] = lane_runs
         return FrameObservation(index=index, time=time, lane_runs=runs)
@@ -80,12 +93,12 @@ class LaneSampler:
         if t.sat_min == 0:  # colourless / value-keyed theme
             return val >= t.val_min
         m = np.zeros(hue.shape, dtype=bool)
-        for i, c in enumerate(t.clusters):
+        for c in t.clusters:
             dh = np.minimum(np.abs(hue - c.hue), 180 - np.abs(hue - c.hue))
             m |= (dh <= 20) & (sat >= t.sat_min) & (val >= t.val_min)
         return m
 
-    def _runs_from_mask(self, mask, hue, sat, val, rh) -> list[LaneRun]:
+    def _runs_from_mask(self, mask, hue, sat, val, mask2d, rh) -> list[LaneRun]:
         runs = []
         y = 0
         n = len(mask)
@@ -97,10 +110,14 @@ class LaneSampler:
             while j < n and mask[j]:
                 j += 1
             if j - y >= self.min_run_px:
-                seg_h = hue[y:j]
-                seg_v = val[y:j]
-                seg_s = sat[y:j]
-                cluster = self._dominant_cluster(seg_h, seg_s, seg_v)
+                m = mask2d[y:j]
+                if m.any():
+                    seg_h = hue[y:j][m]
+                    seg_v = val[y:j][m]
+                    seg_s = sat[y:j][m]
+                else:
+                    seg_h = hue[y:j].ravel(); seg_v = val[y:j].ravel(); seg_s = sat[y:j].ravel()
+                cluster = self._dominant_cluster(seg_h)
                 runs.append(LaneRun(
                     y_top=float(y), y_bottom=float(j - 1),
                     cluster=cluster,
@@ -109,7 +126,27 @@ class LaneSampler:
             y = j
         return runs
 
-    def _dominant_cluster(self, hue, sat, val) -> int:
+    @staticmethod
+    def _bridge(active: np.ndarray, gap: int) -> np.ndarray:
+        if gap <= 0:
+            return active
+        out = active.copy()
+        n = len(out)
+        y = 0
+        while y < n:
+            if out[y]:
+                y += 1
+                continue
+            j = y
+            while j < n and not out[j]:
+                j += 1
+            # fill a short inactive gap that sits between two active runs
+            if 0 < y and j < n and (j - y) <= gap:
+                out[y:j] = True
+            y = j
+        return out
+
+    def _dominant_cluster(self, hue) -> int:
         t = self.theme
         if t.rainbow or t.sat_min == 0:
             return 0
