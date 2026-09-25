@@ -10,6 +10,20 @@ export default function Page() {
   const [project, setProject] = useState<Project | null>(null);
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // deep-link: /?job=<id> opens straight into an existing (finished) job
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("job");
+    if (id && !job) {
+      getJob(id)
+        .then((s) => {
+          setJob(s);
+          if (s.status === "done") getResult(id).then(setProject);
+        })
+        .catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!job || job.status === "done" || job.status === "error") return;
     poll.current = setInterval(async () => {
