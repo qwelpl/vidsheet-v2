@@ -180,6 +180,15 @@ def analyze(video_path: str, opts: Options,
         prog({"stage": "reconstruct", "message": f"{len(notes)} notes reconstructed",
               "progress": 0.80})
 
+    # fuse same-pitch fragments / drop tiny slivers before musical analysis (§48)
+    from .events import cleanup_fragments
+    before = len(notes)
+    notes = cleanup_fragments(notes)
+    if before != len(notes):
+        prog({"stage": "reconstruct",
+              "message": f"Cleaned {before - len(notes)} fragment notes",
+              "progress": 0.82})
+
     # --- Pass 4: musical analysis -----------------------------------------
     assign_hands(notes, theme)
     if snap_onsets and audio_onsets is not None:
