@@ -129,12 +129,15 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
         offset, off_conf, off_flags = _refine_offset(h, onset_frame, offset_frame,
                                                      strike, v_global, onset)
         dur = offset - onset
-        # A segment that stays occupied for essentially the whole video AND was
-        # never seen approaching is not a note — it is a static bright element
-        # (persistent hit-line glow, reflection, coloured vignette). Reject it
-        # rather than emit a note held for the entire piece (§35, §51).
+        # A real falling note is a transient: its leading edge is seen
+        # approaching the strike line (onset) and/or its trailing edge is seen
+        # crossing it (offset). A static bright element — a persistent hit-line
+        # glow, reflection or coloured vignette that sits at the line for the
+        # whole piece — is seen doing NEITHER. Reject those; never emit a note
+        # held for the entire video with no observed motion (§35, §51).
         no_approach = "onset_extrapolated" in on_flags
-        if dur > 0.85 * span and no_approach:
+        no_release = "offset_extrapolated" in off_flags
+        if no_approach and no_release:
             i = j + 1
             continue
         note = _make_note(midi, h, onset_frame, offset_frame, onset, offset,
