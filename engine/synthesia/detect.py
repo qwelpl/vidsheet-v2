@@ -86,7 +86,7 @@ class LaneSampler:
             half = max(1.5, lane.half_width * self.column_frac)
             x0 = max(0, int(round(lane.center - half)))
             x1 = min(roll.shape[1], int(round(lane.center + half)) + 1)
-            if x1 - x0 < 2:
+            if x1 - x0 < 2 or rh < 2:
                 continue
             col = roll[:, x0:x1, :]
             hue = col[..., 0].astype(np.float32)
