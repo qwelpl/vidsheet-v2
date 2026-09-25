@@ -125,32 +125,61 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
             j += 1
         offset_frame = j
 
-        onset, on_conf, on_flags = _refine_onset(h, onset_frame, strike, v_global)
-        offset, off_conf, off_flags = _refine_offset(h, onset_frame, offset_frame,
-                                                     strike, v_global, onset)
-        dur = offset - onset
-        # A real falling note is a transient: its leading edge is seen
-        # approaching the strike line (onset) and/or its trailing edge is seen
-        # crossing it (offset). A static bright element — a persistent hit-line
-        # glow, reflection or coloured vignette that sits at the line for the
-        # whole piece — is seen doing NEITHER. Reject those; never emit a note
-        # held for the entire video with no observed motion (§35, §51).
-        no_approach = "onset_extrapolated" in on_flags
+        # Reconstruct the approaching bar's trajectory in the clean roll area
+        # above the strike line. A genuine falling note descends at the global
+        # fall speed; its visible bar length equals its duration. Measuring both
+        # away from the glow-contaminated strike zone is far more robust on real
+        # composited video than reading the note-off at the line (§11, §51).
+        traj = _approach_trajectory(h, onset_frame, strike, v_global)
+        onset, on_conf, on_flags, dur_from_len, top_clamped, vel_ok = \
+            _from_trajectory(traj, strike, v_global)
+
+        offset_r, off_conf, off_flags = _refine_offset(h, onset_frame, offset_frame,
+                                                       strike, v_global, onset if onset else h.times[onset_frame])
+        no_approach = onset is None
         no_release = "offset_extrapolated" in off_flags
+
+        # static element (glow / UI / composited footage): no falling approach
+        # AND no clean release -> not a note (§35, §51).
         if no_approach and no_release:
             i = j + 1
             continue
+        # approach is the ONLY evidence but the bar does not descend at the fall
+        # speed -> a drifting anime region, not a note. Reject. When a clean
+        # release also exists we keep it (a real note whose approach was noisy
+        # over the moving footage).
+        if not no_approach and not vel_ok and no_release:
+            i = j + 1
+            continue
+
+        if no_approach:
+            onset = offset_r - 0.05 if offset_r else h.times[onset_frame]
+            on_conf = 0.4
+            on_flags = ["onset_extrapolated"]
+
+        # duration: prefer the visible bar length (measured in the clean roll,
+        # away from the strike-line glow) when the trajectory is trustworthy;
+        # otherwise the observed release, then the occupancy span.
+        if dur_from_len is not None and vel_ok and not top_clamped:
+            offset = onset + dur_from_len
+            dconf = 0.85
+        elif not no_release and offset_r > onset:
+            offset = offset_r
+            dconf = off_conf
+        else:
+            offset = max(offset_r, onset + (h.times[offset_frame] - h.times[onset_frame]))
+            dconf = 0.4
+            off_flags = list(set(off_flags + ["offset_extrapolated"]))
+
         note = _make_note(midi, h, onset_frame, offset_frame, onset, offset,
-                          geom, on_conf, off_conf, on_flags + off_flags)
+                          geom, on_conf, dconf, on_flags + (off_flags if offset <= onset + 1e-4 else []))
+        dur = offset - onset
+        if top_clamped:
+            note.flag("duration_unbounded_top")  # bar entered before fully visible (§37)
+            note.duration_confidence = min(note.duration_confidence, 0.45)
         if dur > 0.5 * span:
             note.flag("implausibly_long")
             note.detection_confidence = min(note.detection_confidence, 0.3)
-        # a bar taller than the whole visible roll, mid-piece, is almost always a
-        # static element (glow/UI) tracked as a note — keep it but flag loudly.
-        if v_global > 0 and dur * v_global > 0.95 * strike and not no_approach:
-            note.flag("bar_exceeds_roll")
-            note.detection_confidence = min(note.detection_confidence, 0.3)
-            note.duration_confidence = min(note.duration_confidence, 0.3)
         notes.append(note)
         i = j + 1
     return notes
@@ -159,6 +188,62 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
 def _is_flicker(frames, j, occ) -> bool:
     # a single missing occupied frame surrounded by occupied ones
     return False  # occupancy already tolerant; kept explicit for clarity
+
+
+def _approach_trajectory(h: LaneHistory, onset_frame: int, strike: float,
+                         v: float, max_pts: int = 30):
+    """Follow the note's bar backwards from its strike frame through the roll,
+    picking in each frame the run whose leading edge best matches a bar falling
+    at speed ``v``. Returns [(t, y_top, y_bottom), ...] earliest-first."""
+    pts = []
+    t_ref = h.times[onset_frame]
+    k = onset_frame - 1
+    lost = 0
+    while k >= 0 and len(pts) < max_pts:
+        dt = t_ref - h.times[k]
+        pred = strike - v * dt                     # where the bar bottom should be
+        cand = [r for r in h.runs[k] if r.y_bottom < strike - 1]
+        if not cand:
+            break
+        r = min(cand, key=lambda r: abs(r.y_bottom - pred))
+        if abs(r.y_bottom - pred) > max(0.35 * v * dt, 20.0):
+            lost += 1                    # note momentarily lost behind footage
+            if lost > 3:
+                break
+            k -= 1
+            continue
+        pts.append((h.times[k], float(r.y_top), float(r.y_bottom)))
+        lost = 0
+        k -= 1
+    return pts[::-1]
+
+
+def _from_trajectory(traj, strike: float, v: float):
+    """From an approach trajectory derive (onset, onset_conf, flags,
+    duration_from_length | None, top_clamped, velocity_ok)."""
+    if len(traj) < 2:
+        return None, 0.4, ["onset_extrapolated"], None, True, False
+    ts = np.array([p[0] for p in traj])
+    ybs = np.array([p[2] for p in traj])
+    A = np.vstack([ts - ts[0], np.ones_like(ts)]).T
+    (slope, intercept), *_ = np.linalg.lstsq(A, ybs, rcond=None)
+    if slope <= 1e-3:
+        return None, 0.4, ["onset_extrapolated"], None, True, False
+    # constant-velocity check: a real bar descends at ~the global fall speed.
+    # Kept loose so noisy approaches over moving footage still qualify; only
+    # clearly-wrong speeds (near-static, or far too fast) are rejected.
+    ratio = slope / max(v, 1e-3)
+    vel_ok = 0.45 <= ratio <= 2.3
+    onset = float(ts[0] + (strike - intercept) / slope)
+    resid = float(np.sqrt(np.mean((A @ [slope, intercept] - ybs) ** 2)))
+    conf = float(np.clip(0.92 - resid / 20, 0.55, 0.96))
+    # visible bar length -> duration (measured where the bar is fully in view)
+    lengths = [p[2] - p[1] for p in traj if p[1] > 1.5]
+    top_clamped = any(p[1] <= 1.5 for p in traj)
+    dur_len = None
+    if lengths:
+        dur_len = float(np.median(lengths)) / slope
+    return onset, conf, [], dur_len, top_clamped, vel_ok
 
 
 def _refine_onset(h: LaneHistory, onset_frame: int, strike: float, v_global: float):
