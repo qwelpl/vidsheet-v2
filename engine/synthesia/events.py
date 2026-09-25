@@ -144,7 +144,13 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
                           geom, on_conf, off_conf, on_flags + off_flags)
         if dur > 0.5 * span:
             note.flag("implausibly_long")
-            note.detection_confidence = min(note.detection_confidence, 0.35)
+            note.detection_confidence = min(note.detection_confidence, 0.3)
+        # a bar taller than the whole visible roll, mid-piece, is almost always a
+        # static element (glow/UI) tracked as a note — keep it but flag loudly.
+        if v_global > 0 and dur * v_global > 0.95 * strike and not no_approach:
+            note.flag("bar_exceeds_roll")
+            note.detection_confidence = min(note.detection_confidence, 0.3)
+            note.duration_confidence = min(note.duration_confidence, 0.3)
         notes.append(note)
         i = j + 1
     return notes
