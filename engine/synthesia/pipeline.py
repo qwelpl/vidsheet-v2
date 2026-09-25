@@ -148,6 +148,21 @@ def analyze(video_path: str, opts: Options,
 
     # --- Pass 4: musical analysis -----------------------------------------
     assign_hands(notes, theme)
+
+    # audio-assisted onset refinement: snap visual onsets to clean audio attacks
+    # where they nearly agree, removing timing scatter (§18). Pitches and note
+    # existence stay visually determined — audio only sharpens timing.
+    try:
+        from .audio import extract_onsets, snap_onsets
+        onsets = extract_onsets(video_path)
+        refined = snap_onsets(notes, onsets)
+        if refined:
+            prog({"stage": "audio",
+                  "message": f"Audio verified timing on {refined} notes "
+                             f"({len(onsets)} attacks)", "progress": 0.84})
+    except Exception:
+        pass
+
     tempo = estimate_tempo(notes, meta.fps)
     quantized = quantize(notes, tempo)
     prog({"stage": "tempo", "message": f"~{tempo.bpm:.1f} BPM (conf {tempo.confidence:.2f})",
