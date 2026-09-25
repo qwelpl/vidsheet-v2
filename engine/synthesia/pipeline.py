@@ -117,6 +117,8 @@ def analyze(video_path: str, opts: Options,
                      f"{' (rainbow)' if theme.rainbow else ''}",
           "progress": 0.08})
 
+    background = None
+
     # --- Pass 2: stream & collect per-lane history ------------------------
     sampler = LaneSampler(geom, theme)
     collector = HistoryCollector(geom)
@@ -165,6 +167,49 @@ def analyze(video_path: str, opts: Options,
     return AnalysisResult(meta=meta, geometry=geom, theme=theme, notes=notes,
                           tempo=tempo, quantized=quantized, report=report,
                           fall_speed=v, diffs=diffs, ground_truth=gt)
+
+
+def _hitline_band_height(frames: list[np.ndarray], geom: kb.KeyboardGeometry,
+                         theme: ThemeModel) -> int:
+    """Height (px) of a persistent note-coloured band adjacent to the strike
+    line, active across many lanes over time — a hit-line glow/reflection rather
+    than real notes. Measured on the static-ish sample frames."""
+    strike = int(geom.strike_y)
+    look = min(strike, 40)
+    counts = np.zeros(look, dtype=np.float64)
+    lanes = list(geom.lanes.values())
+    n = 0
+    for f in frames:
+        hsv = cv2.cvtColor(f[strike - look:strike, :, :], cv2.COLOR_BGR2HSV)
+        for lane in lanes:
+            x0 = max(0, int(lane.center - lane.half_width))
+            x1 = min(hsv.shape[1], int(lane.center + lane.half_width) + 1)
+            if x1 <= x0:
+                continue
+            col = hsv[:, x0:x1]
+            hue = col[..., 0].astype(np.float32)
+            sat = col[..., 1].astype(np.float32)
+            val = col[..., 2].astype(np.float32)
+            mask = np.zeros(hue.shape, bool)
+            if theme.rainbow or theme.sat_min == 0:
+                mask = (sat >= theme.sat_min) & (val >= theme.val_min)
+            else:
+                for c in theme.clusters:
+                    dh = np.minimum(np.abs(hue - c.hue), 180 - np.abs(hue - c.hue))
+                    mask |= (dh <= 20) & (sat >= theme.sat_min) & (val >= theme.val_min)
+            counts[mask.mean(axis=1) >= 0.5] += 1
+        n += 1
+    if n == 0:
+        return 0
+    frac = counts / (n * max(1, len(lanes)))
+    # walk up from the strike while a large fraction of lanes stay active
+    h = 0
+    for y in range(look - 1, -1, -1):
+        if frac[y] > 0.3:
+            h = look - y
+        else:
+            break
+    return int(h)
 
 
 def _sample_frames(meta: VideoMeta, scale_w, n: int) -> list[np.ndarray]:

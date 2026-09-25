@@ -42,7 +42,9 @@ class LaneSampler:
 
     def __init__(self, geom: KeyboardGeometry, theme: ThemeModel,
                  column_frac: float = 1.0, min_run_px: int = 2,
-                 min_fill: float = 0.35, center_fill: float = 0.72):
+                 min_fill: float = 0.35, center_fill: float = 0.72,
+                 background: "np.ndarray | None" = None, motion_thr: int = 30,
+                 motion_gate: bool = False, motion_alpha: float = 0.08):
         self.geom = geom
         self.theme = theme
         self.column_frac = column_frac
@@ -51,16 +53,34 @@ class LaneSampler:
         self.center_fill = center_fill
         self.roll_top = 0
         self.strike_y = int(round(geom.strike_y))
+        # Rolling-background motion gate (§32, §33, §35): note bars scroll, so at
+        # any pixel they are only briefly present; an EMA background therefore
+        # tracks the static content (keyboard, hit-line glow, composited footage)
+        # and the moving bars stand out as the frame-vs-background difference.
+        self.motion_thr = motion_thr
+        self.motion_gate = motion_gate
+        self.motion_alpha = motion_alpha
+        self._bg = None  # EMA background over the roll region, float32
         self.bridge_px = max(3, int(round(geom.strike_y * 0.02)))
         # exclude a thin strip just above the strike line: many renderers draw a
         # coloured strike line / hit-flash there that would otherwise register as
         # a note in every lane on sparse clips.
         self.roll_bottom = max(1, self.strike_y - max(3, int(round(geom.strike_y * 0.008))))
+        if background is not None:
+            self._bg = background[self.roll_top: self.roll_bottom, :, :].astype(np.float32)
 
     def observe(self, index: int, time: float, bgr: np.ndarray) -> FrameObservation:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         roll = hsv[self.roll_top: self.roll_bottom, :, :]
         rh = roll.shape[0]
+        moving = None
+        if self.motion_gate:
+            cur = bgr[self.roll_top: self.roll_bottom, :, :].astype(np.float32)
+            if self._bg is None:
+                self._bg = cur.copy()          # cold start: no motion this frame
+            else:
+                moving = np.abs(cur - self._bg).max(axis=2) >= self.motion_thr
+                self._bg += self.motion_alpha * (cur - self._bg)   # EMA update
         runs: dict[int, list[LaneRun]] = {}
         for midi, lane in self.geom.lanes.items():
             half = max(1.5, lane.half_width * self.column_frac)
@@ -73,6 +93,8 @@ class LaneSampler:
             sat = col[..., 1].astype(np.float32)
             val = col[..., 2].astype(np.float32)
             mask2d = self._core_mask(hue, sat, val)   # H x Wwin bool
+            if moving is not None:
+                mask2d &= moving[:, x0:x1]
             # Two gates decide a note is present in this lane, not a neighbour's
             # bleed: (a) the lane *centre* must be covered — a neighbouring
             # note's core edge never reaches the centre (§7); (b) enough of the
