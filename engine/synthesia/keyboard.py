@@ -178,56 +178,6 @@ def _find_white_boundaries(strip: np.ndarray) -> np.ndarray:
     return np.array(peaks, dtype=np.float64)
 
 
-def _detect_black_centers(gray: np.ndarray, kb_top: int, kb_bottom: int) -> list[float]:
-    """Sub-pixel x-centres of the black keys.
-
-    Black keys are wide dark blobs occupying the upper part of the keyboard. We
-    locate the rows where a large fraction of columns are dark (the black-key
-    band, distinct from the white-key body where only thin separators are dark),
-    then extract the dark blobs of black-key width in that band."""
-    band = gray[kb_top:kb_bottom, :]
-    h, w = band.shape
-    dark_frac = (band < 100).mean(axis=1)          # per-row fraction dark
-    # black-key band = the FIRST contiguous run of dark-rich rows from the top
-    # (the black keys). A dark strip below the keyboard, if the band overshoots,
-    # is a separate later run and must be ignored.
-    r0 = 0
-    while r0 < h and dark_frac[r0] <= 0.18:
-        r0 += 1
-    if r0 >= h:
-        return []
-    r1 = r0
-    while r1 < h and dark_frac[r1] > 0.18:
-        r1 += 1
-    if r1 - r0 < 3:
-        return []
-    strip = band[r0 + 1: r1 - 1, :]
-    col = strip.mean(axis=0)
-    thr = 0.5 * (float(np.percentile(col, 85)) + float(np.percentile(col, 15)))
-    dark = col < min(thr, 120)
-    centers = []
-    i = 0
-    while i < w:
-        if dark[i]:
-            j = i
-            while j < w and dark[j]:
-                j += 1
-            if (j - i) >= 6:                        # black-key width, not a seam
-                seg = (col.max() - col[i:j])
-                s = seg.sum()
-                cx = (np.arange(i, j) * seg).sum() / s if s > 0 else (i + j) / 2
-                centers.append(float(cx))
-            i = j
-        else:
-            i += 1
-    return centers
-
-
-def _black_in_gap(centers: list[float], x0: float, x1: float) -> bool:
-    lo, hi = min(x0, x1), max(x0, x1)
-    return any(lo < c < hi for c in centers)
-
-
 def _has_black_between(upper: np.ndarray, x0: float, x1: float) -> bool:
     """Is there a black key between two adjacent white-key centres?
 
@@ -277,21 +227,15 @@ def build_geometry(
     white_centers = (starts + ends) / 2.0
     white_hw = step / 2.0
 
-    # Detect the black keys directly (dark blobs in the upper keyboard) rather
-    # than assuming they sit at white-key midpoints. This yields their true
-    # x-centres — essential when a renderer offsets or narrows them — and a
-    # reliable gap pattern for the C-phase (§6).
-    black_centers = _detect_black_centers(gray, kb_top, kb_bottom)
-    if black_centers:
-        gaps = [_black_in_gap(black_centers, white_centers[i], white_centers[i + 1])
-                for i in range(len(white_centers) - 1)]
-    else:
-        gaps = [_has_black_between(upper, white_centers[i], white_centers[i + 1])
-                for i in range(len(white_centers) - 1)]
+    # black-key presence between adjacent white keys
+    gaps = [
+        _has_black_between(upper, white_centers[i], white_centers[i + 1])
+        for i in range(len(white_centers) - 1)
+    ]
 
     phase = _match_phase(gaps)
-    lanes = _assign_pitches(white_centers, white_hw, gaps, phase,
-                            black_centers if black_centers else None)
+    lanes = _assign_pitches(white_centers, white_hw, gaps, phase)
+    low = min(lanes),
     lo_midi = min(lanes)
     hi_midi = max(lanes)
 
@@ -324,17 +268,14 @@ def _geometry_confidence(gaps: list[bool], phase: int) -> float:
     return float((pat == obs).mean())
 
 
-def _assign_pitches(white_centers, white_hw, gaps, phase,
-                    black_centers=None) -> dict[int, Lane]:
+def _assign_pitches(white_centers, white_hw, gaps, phase) -> dict[int, Lane]:
     """Assign each white key a MIDI number, then place black keys.
 
     Relative semitone positions come straight from the gap pattern: adjacent
     white keys differ by 2 semitones when a black key sits between them and by 1
     otherwise. Phase only fixes which pitch class the first white key is. The
     whole board is then transposed by whole octaves onto a standard range so
-    pitch classes are preserved but the octave is anchored (§6). When actual
-    black-key centres were detected, black lanes are placed there (matching where
-    black-key notes really fall) instead of at the white-key midpoint."""
+    pitch classes are preserved but the octave is anchored (§6)."""
     n = len(white_centers)
     # cumulative relative semitones from the first white key
     rel = [0]
@@ -348,18 +289,12 @@ def _assign_pitches(white_centers, white_hw, gaps, phase,
         midi = base + first_pc + rel[i]
         lanes[midi] = Lane(midi, float(white_centers[i]), float(white_hw), False)
     white_midis = list(lanes.keys())
-    black_hw = white_hw * 0.62
     for i in range(n - 1):
         if not gaps[i]:
             continue
         black_midi = white_midis[i] + 1
-        lo, hi = white_centers[i], white_centers[i + 1]
-        cx = (lo + hi) / 2.0
-        if black_centers:                      # snap to the real black key
-            cand = [c for c in black_centers if lo < c < hi]
-            if cand:
-                cx = min(cand, key=lambda c: abs(c - (lo + hi) / 2))
-        lanes[black_midi] = Lane(black_midi, float(cx), float(black_hw), True)
+        cx = (white_centers[i] + white_centers[i + 1]) / 2.0
+        lanes[black_midi] = Lane(black_midi, float(cx), float(white_hw * 0.58), True)
 
     shift = _octave_transpose(min(lanes), max(lanes))
     if shift:
