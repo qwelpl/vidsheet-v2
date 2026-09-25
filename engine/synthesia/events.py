@@ -171,9 +171,18 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
             dconf = 0.4
             off_flags = list(set(off_flags + ["offset_extrapolated"]))
 
+        dur = offset - onset
+        # A short detection that never showed a genuine descent at the fall
+        # speed is not a note but an on-screen overlay — a comment box, emoji,
+        # text or watermark that briefly matched a note colour. Real short notes
+        # still fall normally, so they keep a clean constant-velocity approach;
+        # overlays do not. Drop these (§16, §36).
+        if dur < 0.09 and (no_approach or not vel_ok):
+            i = j + 1
+            continue
+
         note = _make_note(midi, h, onset_frame, offset_frame, onset, offset,
                           geom, on_conf, dconf, on_flags + (off_flags if offset <= onset + 1e-4 else []))
-        dur = offset - onset
         if top_clamped:
             note.flag("duration_unbounded_top")  # bar entered before fully visible (§37)
             note.duration_confidence = min(note.duration_confidence, 0.45)
