@@ -86,18 +86,23 @@ def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
                   min_gap_frames: int = 1) -> list[NoteEvent]:
     strike = float(geom.strike_y)
     band = max(6.0, strike * 0.02)
+    # total analysed span, used to reject static bright elements (a persistent
+    # hit-line glow / reflection reads as a note that never releases, §35).
+    tmin = min((h.times[0] for h in hist.values() if h.times), default=0.0)
+    tmax = max((h.times[-1] for h in hist.values() if h.times), default=1.0)
+    span = max(1e-3, tmax - tmin)
     notes: list[NoteEvent] = []
     for midi, h in hist.items():
         if not h.frames:
             continue
-        notes.extend(_extract_lane(midi, h, geom, strike, band, fps, v_global))
+        notes.extend(_extract_lane(midi, h, geom, strike, band, fps, v_global, span))
     notes.sort(key=lambda n: (n.start, n.midi))
     for i, n in enumerate(notes):
         n.id = i + 1
     return notes
 
 
-def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global):
+def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=1e9):
     times = h.times
     frames = h.frames
     n = len(times)
@@ -123,8 +128,20 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global):
         onset, on_conf, on_flags = _refine_onset(h, onset_frame, strike, v_global)
         offset, off_conf, off_flags = _refine_offset(h, onset_frame, offset_frame,
                                                      strike, v_global, onset)
+        dur = offset - onset
+        # A segment that stays occupied for essentially the whole video AND was
+        # never seen approaching is not a note — it is a static bright element
+        # (persistent hit-line glow, reflection, coloured vignette). Reject it
+        # rather than emit a note held for the entire piece (§35, §51).
+        no_approach = "onset_extrapolated" in on_flags
+        if dur > 0.85 * span and no_approach:
+            i = j + 1
+            continue
         note = _make_note(midi, h, onset_frame, offset_frame, onset, offset,
                           geom, on_conf, off_conf, on_flags + off_flags)
+        if dur > 0.5 * span:
+            note.flag("implausibly_long")
+            note.detection_confidence = min(note.detection_confidence, 0.35)
         notes.append(note)
         i = j + 1
     return notes
