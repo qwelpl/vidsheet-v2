@@ -185,6 +185,44 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
     return notes
 
 
+def cleanup_fragments(notes: list[NoteEvent], merge_gap: float = 0.045,
+                      drop_min: float = 0.022) -> list[NoteEvent]:
+    """Fuse same-pitch fragments and drop tiny leftovers (§48).
+
+    Detection occasionally splits one note into a main note plus a sliver, or
+    emits a near-duplicate at the same pitch. Here, per pitch, notes that overlap
+    — or sit a hair apart where one of them is very short — are merged into the
+    longer note; anything still shorter than ``drop_min`` is removed. Genuine
+    fast repeats (both notes a real length, with a clean gap) are left intact."""
+    by_pitch: dict[int, list[NoteEvent]] = {}
+    for n in notes:
+        by_pitch.setdefault(n.midi, []).append(n)
+    kept: list[NoteEvent] = []
+    for group in by_pitch.values():
+        group.sort(key=lambda n: n.start)
+        merged: list[NoteEvent] = []
+        for n in group:
+            if merged:
+                p = merged[-1]
+                overlap = n.start < p.end
+                sliver = (n.start - p.end < merge_gap) and \
+                    (min(n.duration, p.duration) < 0.05)
+                if overlap or sliver:
+                    if n.end > p.end:
+                        p.end = n.end
+                    p.detection_confidence = max(p.detection_confidence,
+                                                 n.detection_confidence)
+                    for f in n.issues:
+                        p.flag(f)
+                    continue
+            merged.append(n)
+        kept.extend(n for n in merged if n.duration >= drop_min)
+    kept.sort(key=lambda n: (n.start, n.midi))
+    for i, n in enumerate(kept):
+        n.id = i + 1
+    return kept
+
+
 def _is_flicker(frames, j, occ) -> bool:
     # a single missing occupied frame surrounded by occupied ones
     return False  # occupancy already tolerant; kept explicit for clarity
