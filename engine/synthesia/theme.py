@@ -90,7 +90,11 @@ def detect_theme(
     # core brightness keeps cores and rejects glow (§34).
     core_level = float(np.percentile(V, 92))
     val_min = int(np.clip(max(val_min, 0.55 * core_level), 90, 210))
-    hist = np.bincount(H, minlength=180).astype(np.float64)
+    # weight the hue histogram by saturation: real note colours are strongly
+    # saturated, so this suppresses desaturated compression fringe (which can
+    # otherwise outvote a genuine second hand colour, e.g. green). (§8)
+    weights = (S.astype(np.float64) / 255.0) ** 2
+    hist = np.bincount(H, weights=weights, minlength=180).astype(np.float64)
     hist = cv2.GaussianBlur(hist.reshape(1, -1), (1, 9), 0).ravel()
 
     # rainbow test: hue spread very wide and reasonably flat
