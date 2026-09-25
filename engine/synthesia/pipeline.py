@@ -191,12 +191,14 @@ def analyze(video_path: str, opts: Options,
 
     # --- Pass 4: musical analysis -----------------------------------------
     assign_hands(notes, theme)
-    if snap_onsets and audio_onsets is not None:
+    if snap_onsets and audio_onsets is not None and len(audio_onsets):
         refined = snap_onsets(notes, audio_onsets)
-        if refined:
-            prog({"stage": "audio",
-                  "message": f"Audio verified timing on {refined} notes "
-                             f"({len(audio_onsets)} attacks)", "progress": 0.84})
+        from .audio import drop_unsupported_short
+        dropped = drop_unsupported_short(notes, audio_onsets)
+        msg = f"Audio verified timing on {refined} notes ({len(audio_onsets)} attacks)"
+        if dropped:
+            msg += f"; dropped {dropped} silent short artifacts"
+        prog({"stage": "audio", "message": msg, "progress": 0.84})
 
     tempo = estimate_tempo(notes, meta.fps)
     quantized = quantize(notes, tempo)

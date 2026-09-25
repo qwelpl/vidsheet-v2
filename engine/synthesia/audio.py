@@ -65,6 +65,33 @@ def extract_onsets(video_path: str, sr: int = 22050) -> np.ndarray:
     return np.array(onsets)
 
 
+def drop_unsupported_short(notes: list[NoteEvent], onsets: np.ndarray,
+                           max_dur: float = 0.07, tol: float = 0.055) -> int:
+    """Remove short notes that produce no sound: a brief detection with no audio
+    attack near its onset is a visual artifact (overlay text/emoji, watermark,
+    reflection) rather than a played note (§18, §36). Longer notes and anything
+    with audio support are untouched. Returns the number removed. Notes are
+    edited in place; caller re-ids."""
+    if onsets.size == 0:
+        return 0
+    onsets = np.sort(onsets)
+    keep = []
+    removed = 0
+    for n in notes:
+        if n.duration <= max_dur:
+            i = int(np.searchsorted(onsets, n.start))
+            near = min((abs(onsets[j] - n.start) for j in (i - 1, i)
+                        if 0 <= j < onsets.size), default=1e9)
+            if near > tol:
+                removed += 1
+                continue
+        keep.append(n)
+    notes[:] = keep
+    for i, n in enumerate(notes):
+        n.id = i + 1
+    return removed
+
+
 def snap_onsets(notes: list[NoteEvent], onsets: np.ndarray,
                 tol: float = 0.06) -> int:
     """Snap each note's onset to the nearest audio attack within ``tol`` seconds,
