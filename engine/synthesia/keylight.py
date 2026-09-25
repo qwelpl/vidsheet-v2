@@ -127,34 +127,55 @@ def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames):
     n = len(times)
     out: list[NoteEvent] = []
     i = 0
+    # A held note must survive brief lit-detection flicker (compression, a hand
+    # passing over the key). Tolerate a few consecutive unlit frames before
+    # calling it a release, so a sustained note is not chopped into pieces.
+    max_gap = max(3, int(round(0.06 / max(frame_dt, 1e-3))))  # ~60 ms
     while i < n:
         if lit[i] < 0:
             i += 1
             continue
         j = i
+        last_lit = i
         gap = 0
-        clusters = []
-        while j < n and (lit[j] >= 0 or gap < 1):
+        clusters = [lit[i]]
+        j = i + 1
+        while j < n:
             if lit[j] >= 0:
-                clusters.append(lit[j]); gap = 0
+                clusters.append(lit[j]); last_lit = j; gap = 0
             else:
                 gap += 1
+                if gap > max_gap:
+                    break
             j += 1
-        end_idx = j - 1 - (1 if lit[j - 1] < 0 else 0)
-        run_len = end_idx - i + 1
+        run_len = last_lit - i + 1
         if run_len >= min_frames:
             t_on = times[i]
-            t_off = times[min(end_idx + 1, n - 1)]  # release ~ next frame edge
+            t_off = times[min(last_lit + 1, n - 1)]  # release ~ next frame edge
             cluster = int(np.bincount(clusters).argmax()) if clusters else 0
-            # split the run at any interior audio attacks -> repeated notes (§12)
-            splits = [t for t in onsets if t_on + 0.045 < t < t_off - 0.02]
+            # Split into repeated notes ONLY where the key is re-struck: an audio
+            # attack that coincides with a visible dip in the key's illumination
+            # (§12). A steadily-held key with no dip is never split just because
+            # some OTHER note attacked during it.
+            splits = [t for t in onsets
+                      if t_on + 0.05 < t < t_off - 0.03 and _restruck(lit, times, t)]
             bounds = [t_on] + splits + [t_off]
             for a, b in zip(bounds, bounds[1:]):
                 if b - a < frame_dt * 0.5:
                     continue
                 out.append(_mk(midi, a, b, cluster, geom, run_len, len(splits) > 0))
-        i = j
+        i = last_lit + 1
     return out
+
+
+def _restruck(lit: list[int], times: list[float], t: float) -> bool:
+    """Is there a brief unlit dip in this key near time ``t`` (a re-strike)?"""
+    # nearest frame index to t
+    k = int(np.searchsorted(times, t))
+    for idx in range(max(0, k - 2), min(len(lit), k + 3)):
+        if lit[idx] < 0:
+            return True
+    return False
 
 
 def _mk(midi, start, end, cluster, geom, run_len, was_split) -> NoteEvent:
