@@ -41,6 +41,7 @@ class Options:
     verify_stride: int = 4            # keep every Nth observation for verify
     min_note_duration: float = 0.02
     geometry_manual: Optional[kb.KeyboardGeometry] = None
+    detector: str = "auto"            # auto | bars | keylight
 
     @classmethod
     def for_preset(cls, preset: str) -> "Options":
@@ -117,51 +118,76 @@ def analyze(video_path: str, opts: Options,
                      f"{' (rainbow)' if theme.rainbow else ''}",
           "progress": 0.08})
 
-    background = None
+    # audio attacks (shared by both detectors for timing refinement, §18)
+    try:
+        from .audio import extract_onsets, snap_onsets
+        audio_onsets = extract_onsets(video_path)
+    except Exception:
+        audio_onsets = None
+        snap_onsets = None
 
-    # --- Pass 2: stream & collect per-lane history ------------------------
-    sampler = LaneSampler(geom, theme)
-    collector = HistoryCollector(geom)
+    # Detector choice: key-highlight reading is far more robust when the notes
+    # are composited over moving footage; falling-bar tracking is used for clean
+    # renders. 'auto' picks key-highlight only when the keyboard clearly lights
+    # up pressed keys.
+    from . import keylight
+    composited = _roll_is_composited(median, geom)
+    use_keylight = opts.detector == "keylight" or (
+        opts.detector == "auto" and composited
+        and keylight.applicable(geom, theme, sample_frames))
+
     observations: list[FrameObservation] = []
-    n = 0
     total = max(1, meta.frame_count)
-    for fr in videoio.stream_frames(meta, scale_width=scale_w):
-        obs = sampler.observe(fr.index, fr.time, fr.image)
-        collector.add(obs)
-        if n % opts.verify_stride == 0:
-            observations.append(obs)
-        n += 1
-        if n % 120 == 0:
-            active = sum(1 for h in collector.hist.values() if h.frames)
-            prog({"stage": "track",
-                  "message": f"Analysed {n} frames, {active} active lanes",
-                  "progress": 0.08 + 0.62 * min(1.0, n / total)})
 
-    v = estimate_fall_speed(collector.hist, geom)
-    prog({"stage": "track", "message": f"Fall speed {v:.0f} px/s",
-          "progress": 0.72})
-
-    # --- Pass 3: extract note events --------------------------------------
-    notes = extract_notes(collector.hist, geom, meta.fps, v)
-    prog({"stage": "reconstruct", "message": f"{len(notes)} notes reconstructed",
-          "progress": 0.80})
+    if use_keylight:
+        prog({"stage": "theme",
+              "message": "Key-highlight detection (notes-over-video mode)",
+              "progress": 0.09})
+        v = _quick_fall_speed(meta, geom, theme, scale_w)
+        kcol = keylight.KeyLightCollector(geom, theme)
+        n = 0
+        for fr in videoio.stream_frames(meta, scale_width=scale_w):
+            kcol.add(fr.time, fr.image)
+            n += 1
+            if n % 150 == 0:
+                down = sum(1 for l in kcol.hist.values() if l.lit and l.lit[-1] >= 0)
+                prog({"stage": "track",
+                      "message": f"Read {n} frames, {down} keys down",
+                      "progress": 0.08 + 0.62 * min(1.0, n / total)})
+        import numpy as _np
+        notes = keylight.extract_notes(kcol.hist, geom, meta.fps,
+                                       audio_onsets if audio_onsets is not None else _np.array([]))
+        prog({"stage": "reconstruct",
+              "message": f"{len(notes)} notes (key-highlight)", "progress": 0.80})
+    else:
+        sampler = LaneSampler(geom, theme)
+        collector = HistoryCollector(geom)
+        n = 0
+        for fr in videoio.stream_frames(meta, scale_width=scale_w):
+            obs = sampler.observe(fr.index, fr.time, fr.image)
+            collector.add(obs)
+            if n % opts.verify_stride == 0:
+                observations.append(obs)
+            n += 1
+            if n % 120 == 0:
+                active = sum(1 for h in collector.hist.values() if h.frames)
+                prog({"stage": "track",
+                      "message": f"Analysed {n} frames, {active} active lanes",
+                      "progress": 0.08 + 0.62 * min(1.0, n / total)})
+        v = estimate_fall_speed(collector.hist, geom)
+        prog({"stage": "track", "message": f"Fall speed {v:.0f} px/s", "progress": 0.72})
+        notes = extract_notes(collector.hist, geom, meta.fps, v)
+        prog({"stage": "reconstruct", "message": f"{len(notes)} notes reconstructed",
+              "progress": 0.80})
 
     # --- Pass 4: musical analysis -----------------------------------------
     assign_hands(notes, theme)
-
-    # audio-assisted onset refinement: snap visual onsets to clean audio attacks
-    # where they nearly agree, removing timing scatter (§18). Pitches and note
-    # existence stay visually determined — audio only sharpens timing.
-    try:
-        from .audio import extract_onsets, snap_onsets
-        onsets = extract_onsets(video_path)
-        refined = snap_onsets(notes, onsets)
+    if snap_onsets and audio_onsets is not None:
+        refined = snap_onsets(notes, audio_onsets)
         if refined:
             prog({"stage": "audio",
                   "message": f"Audio verified timing on {refined} notes "
-                             f"({len(onsets)} attacks)", "progress": 0.84})
-    except Exception:
-        pass
+                             f"({len(audio_onsets)} attacks)", "progress": 0.84})
 
     tempo = estimate_tempo(notes, meta.fps)
     quantized = quantize(notes, tempo)
@@ -225,6 +251,36 @@ def _hitline_band_height(frames: list[np.ndarray], geom: kb.KeyboardGeometry,
         else:
             break
     return int(h)
+
+
+def _roll_is_composited(median: np.ndarray, geom) -> bool:
+    """Is the falling-note roll drawn over moving footage rather than a clean
+    dark background? The temporal median averages notes away, leaving the static
+    background; a clean render is near-black and edge-free, a video overlay is
+    bright and textured. Composited roll -> prefer key-highlight detection."""
+    strike = int(geom.strike_y)
+    roll = median[: max(1, strike - 4), :, :]
+    gray = cv2.cvtColor(roll, cv2.COLOR_BGR2GRAY)
+    brightness = float(gray.mean())
+    edges = float(np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)).mean())
+    return brightness > 40.0 or edges > 12.0
+
+
+def _quick_fall_speed(meta: VideoMeta, geom, theme, scale_w) -> float:
+    """Cheap fall-speed estimate for the reconstruction view when the primary
+    detector is key-highlight (which doesn't track bars). Streams a few seconds
+    of falling bars and fits their descent."""
+    coll = HistoryCollector(geom)
+    sampler = LaneSampler(geom, theme)
+    start = meta.duration * 0.4
+    n = 0
+    for fr in videoio.stream_frames(meta, start=start, end=start + 5.0, scale_width=scale_w):
+        coll.add(sampler.observe(fr.index, fr.time, fr.image))
+        n += 1
+        if n > 300:
+            break
+    v = estimate_fall_speed(coll.hist, geom)
+    return v if v > 1 else geom.strike_y * 0.5
 
 
 def _sample_frames(meta: VideoMeta, scale_w, n: int) -> list[np.ndarray]:
