@@ -54,10 +54,15 @@ class KeyLightSampler:
         x1 = min(self.geom.width, int(round(lane.center + xw)) + 1)
         return y0, y1, x0, x1
 
-    def sample(self, bgr: np.ndarray) -> dict[int, int]:
-        """Return {midi: cluster_index} for every lit key in the frame."""
+    def sample(self, bgr: np.ndarray) -> dict[int, tuple[int, float]]:
+        """Return {midi: (cluster_index, fill_fraction)} for every lit key in the
+        frame. The fill fraction (share of the key body matching the note colour)
+        is kept, not just a lit/unlit flag: a fast repeat re-strikes a key that
+        only *dims* between hits without ever crossing below ``fill_thr``, so the
+        coverage envelope — not a full unlit gap — is what separates the repeats
+        (§12)."""
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        lit: dict[int, int] = {}
+        lit: dict[int, tuple[int, float]] = {}
         for midi, lane in self.geom.lanes.items():
             y0, y1, x0, x1 = self._region(lane)
             if y1 <= y0 or x1 <= x0:
@@ -74,7 +79,7 @@ class KeyLightSampler:
                 if frac > best_frac:
                     best_frac, best_c = frac, ci
             if best_frac >= self.fill_thr:
-                lit[midi] = best_c
+                lit[midi] = (best_c, best_frac)
         return lit
 
 
@@ -92,7 +97,8 @@ def applicable(geom: KeyboardGeometry, theme: ThemeModel,
 @dataclass
 class _LaneLight:
     times: list[float] = field(default_factory=list)
-    lit: list[int] = field(default_factory=list)   # cluster index, -1 = off
+    lit: list[int] = field(default_factory=list)     # cluster index, -1 = off
+    fill: list[float] = field(default_factory=list)   # colour coverage 0..1
 
 
 class KeyLightCollector:
@@ -105,7 +111,9 @@ class KeyLightCollector:
         lit = self.sampler.sample(bgr)
         for m, lane in self.hist.items():
             lane.times.append(time)
-            lane.lit.append(lit.get(m, -1))
+            cf = lit.get(m)
+            lane.lit.append(cf[0] if cf is not None else -1)
+            lane.fill.append(cf[1] if cf is not None else 0.0)
 
 
 def extract_notes(hist: dict[int, _LaneLight], geom: KeyboardGeometry, fps: float,
@@ -124,6 +132,7 @@ def extract_notes(hist: dict[int, _LaneLight], geom: KeyboardGeometry, fps: floa
 def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames):
     times = lane.times
     lit = lane.lit
+    fill = lane.fill
     n = len(times)
     out: list[NoteEvent] = []
     i = 0
@@ -153,12 +162,20 @@ def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames):
             t_on = times[i]
             t_off = times[min(last_lit + 1, n - 1)]  # release ~ next frame edge
             cluster = int(np.bincount(clusters).argmax()) if clusters else 0
-            # Split into repeated notes ONLY where the key is re-struck: an audio
-            # attack that coincides with a visible dip in the key's illumination
-            # (§12). A steadily-held key with no dip is never split just because
-            # some OTHER note attacked during it.
-            splits = [t for t in onsets
-                      if t_on + 0.05 < t < t_off - 0.03 and _restruck(lit, times, t)]
+            # Split into repeated notes at every re-strike of THIS key. The
+            # evidence is the key's own illumination envelope: a re-hit makes the
+            # colour coverage dip (the key darkens as it lifts) and recover, even
+            # when the dip never fully clears ``fill_thr`` and even when the bass
+            # attack is too quiet to register a global audio onset. A steadily
+            # held key has a flat envelope and is never split just because some
+            # OTHER note attacked during it (§12).
+            splits = _restrike_times(fill, times, i, last_lit, frame_dt, min_frames)
+            # Corroborating audio attacks that land on a milder dip also split, so
+            # a re-strike the video only barely shows is still caught.
+            for t in onsets:
+                if t_on + 0.05 < t < t_off - 0.03 and _restruck(fill, times, t):
+                    splits.append(float(t))
+            splits = _dedupe(sorted(splits), frame_dt * max(min_frames, 2))
             bounds = [t_on] + splits + [t_off]
             for a, b in zip(bounds, bounds[1:]):
                 if b - a < frame_dt * 0.5:
@@ -168,14 +185,70 @@ def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames):
     return out
 
 
-def _restruck(lit: list[int], times: list[float], t: float) -> bool:
-    """Is there a brief unlit dip in this key near time ``t`` (a re-strike)?"""
-    # nearest frame index to t
+def _restrike_times(fill: list[float], times: list[float], i: int, last_lit: int,
+                    frame_dt: float, min_frames: int) -> list[float]:
+    """Split points inside a lit run [i..last_lit] from the coverage envelope.
+
+    A re-strike shows as a prominent trough: coverage climbs to a peak, dips to a
+    local minimum, then recovers. We require the dip to reach at most ``dip_frac``
+    of the surrounding peak and to recover to ``rise_frac`` of it, and consecutive
+    splits to be at least ``min_sep`` frames apart, so ordinary flicker and a
+    single sustained note never split."""
+    dip_frac = 0.6      # trough must fall to <=60% of the local peak
+    rise_frac = 0.85    # ...and climb back to >=85% of it to count as a new hit
+    min_sep = max(min_frames, 2)
+    seg = fill[i:last_lit + 1]
+    m = len(seg)
+    if m < 2 * min_sep:
+        return []
+    splits: list[float] = []
+    peak = seg[0]
+    last_split_k = 0
+    k = 1
+    while k < m - 1:
+        if seg[k] >= peak:
+            peak = seg[k]
+            k += 1
+            continue
+        # descending below the running peak: walk to the local minimum
+        j = k
+        vmin, kmin = seg[k], k
+        while j < m and seg[j] < peak:
+            if seg[j] < vmin:
+                vmin, kmin = seg[j], j
+            j += 1
+        recovered = j < m and seg[j] >= peak * rise_frac
+        deep = vmin <= peak * dip_frac
+        if recovered and deep and (kmin - last_split_k) >= min_sep:
+            splits.append(times[i + kmin])
+            last_split_k = kmin
+            peak = seg[j]
+        k = max(j, k + 1)
+    return splits
+
+
+def _restruck(fill: list[float], times: list[float], t: float,
+              dip_frac: float = 0.75) -> bool:
+    """Is there a coverage dip in this key near time ``t`` (a re-strike)? Used to
+    confirm an audio attack: coverage near ``t`` falls meaningfully below the
+    local surroundings, or the key goes fully unlit."""
     k = int(np.searchsorted(times, t))
-    for idx in range(max(0, k - 2), min(len(lit), k + 3)):
-        if lit[idx] < 0:
-            return True
-    return False
+    lo, hi = max(0, k - 3), min(len(fill), k + 4)
+    if lo >= hi:
+        return False
+    window = fill[lo:hi]
+    local_peak = max(window)
+    if local_peak <= 0:
+        return False
+    return min(fill[max(0, k - 2):min(len(fill), k + 3)]) <= local_peak * dip_frac
+
+
+def _dedupe(ts: list[float], min_gap: float) -> list[float]:
+    out: list[float] = []
+    for t in ts:
+        if not out or t - out[-1] >= min_gap:
+            out.append(t)
+    return out
 
 
 def _mk(midi, start, end, cluster, geom, run_len, was_split) -> NoteEvent:

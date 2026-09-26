@@ -73,6 +73,27 @@ def test_30fps_source():
     assert g["mean_onset_error_ms"] < 35
 
 
+def test_keylight_repeats_split_on_coverage_dip():
+    # A key-highlight repeat re-strikes a key that only *dims* between hits (its
+    # colour coverage dips and recovers without ever fully clearing) and whose
+    # bass attack may be too quiet for a global audio onset. The illumination
+    # envelope alone must separate the repeats; a steadily-held key must not
+    # split (§12).
+    from synthesia.keylight import _restrike_times
+
+    fps = 60.0
+    dt = 1.0 / fps
+    hit = [0.2, 0.5, 0.9, 0.9, 0.9, 0.5, 0.2]      # one strike, dips at the seam
+    env = hit * 4                                    # four repeats, no full unlit
+    t = [k * dt for k in range(len(env))]
+    splits = _restrike_times(env, t, 0, len(env) - 1, dt, 2)
+    assert len(splits) == 3                          # 4 notes -> 3 boundaries
+
+    held = [0.9] * 40                                # one sustained note
+    t2 = [k * dt for k in range(len(held))]
+    assert _restrike_times(held, t2, 0, len(held) - 1, dt, 2) == []
+
+
 def test_no_hallucinated_notes_on_silence():
     # a clip with a single note must not invent extras (§51)
     notes = [SynthNote(72, 1.0, 1.5, "right", 100)]
