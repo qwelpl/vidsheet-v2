@@ -163,6 +163,18 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
         if dur_from_len is not None and vel_ok and not top_clamped:
             offset = onset + dur_from_len
             dconf = 0.85
+            # A real falling bar covers the strike band for its entire length, so
+            # the occupancy span (onset->offset frame) is a hard lower bound on
+            # duration. When the visible-length measurement comes out shorter — a
+            # note-name label box or a translucent tail splits the coloured bar
+            # into pieces and truncates the trajectory run to the bright head —
+            # trust the occupancy: the bar demonstrably stayed at the line that
+            # long. Only applied on a clean constant-velocity approach, so strike
+            # glow on composited footage can't inflate it.
+            occ_span = h.times[offset_frame] - h.times[onset_frame]
+            if occ_span > dur_from_len + 1.5 / max(fps, 1.0):
+                offset = onset + occ_span
+                dconf = 0.8
         elif not no_release and offset_r > onset:
             offset = offset_r
             dconf = off_conf

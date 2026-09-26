@@ -65,6 +65,16 @@ def detect_theme(
 
     ``frames_hsv_roll`` are HSV crops of the falling-note region across time.
     """
+    # Sample note colours with a LOW saturation floor. Note bars are not always
+    # vividly saturated — some visualisers use pale/pastel colours (e.g. a gold
+    # left hand at saturation ~50) that a fixed sat_min=70 rejects outright,
+    # collapsing that hand's notes to just the solid label. The dark background
+    # sits near zero saturation, so a low floor still separates it, and the
+    # saturation-squared hue weighting below keeps faint fringe from outvoting a
+    # real colour. The detector's actual sat_min is derived from the palest
+    # detected cluster at the end (never above the caller's cap).
+    cap_sat_min = sat_min
+    floor = 30
     hues = []
     sats = []
     vals = []
@@ -72,7 +82,7 @@ def detect_theme(
         h = hsv[..., 0].ravel()
         s = hsv[..., 1].ravel()
         v = hsv[..., 2].ravel()
-        m = (s >= sat_min) & (v >= val_min)
+        m = (s >= floor) & (v >= val_min)
         hues.append(h[m])
         sats.append(s[m])
         vals.append(v[m])
@@ -90,18 +100,30 @@ def detect_theme(
     # core brightness keeps cores and rejects glow (§34).
     core_level = float(np.percentile(V, 92))
     val_min = int(np.clip(max(val_min, 0.55 * core_level), 90, 210))
-    # weight the hue histogram by saturation: real note colours are strongly
-    # saturated, so this suppresses desaturated compression fringe (which can
-    # otherwise outvote a genuine second hand colour, e.g. green). (§8)
-    weights = (S.astype(np.float64) / 255.0) ** 2
-    hist = np.bincount(H, weights=weights, minlength=180).astype(np.float64)
+    # Weight the hue histogram by saturation (real note colours are strongly
+    # saturated, suppressing desaturated fringe, §8) AND normalise each frame's
+    # contribution before summing, so a hue is scored by how CONSISTENTLY it
+    # appears across frames rather than by raw pixel count. This stops a few
+    # outlier frames — an intro/transition/logo in another colour — from
+    # dominating the total and burying a genuine hand colour that is present
+    # throughout the performance.
+    hist = np.zeros(180, dtype=np.float64)
+    for hf, sf in zip(hues, sats):
+        if hf.size == 0:
+            continue
+        wf = (sf.astype(np.float64) / 255.0) ** 2
+        hh = np.bincount(hf, weights=wf, minlength=180)
+        tot = hh.sum()
+        if tot > 0:
+            hist += hh / tot
     hist = cv2.GaussianBlur(hist.reshape(1, -1), (1, 9), 0).ravel()
 
     # rainbow test: hue spread very wide and reasonably flat
     occupied = (hist > hist.max() * 0.15).sum()
     if occupied > 90:
+        rainbow_sat = int(np.clip(0.6 * np.percentile(S, 20), 30, cap_sat_min))
         return ThemeModel(clusters=[ColorCluster(90, float(S.mean()), float(V.mean()), 1.0)],
-                          sat_min=sat_min, val_min=val_min, rainbow=True)
+                          sat_min=rainbow_sat, val_min=val_min, rainbow=True)
 
     # find up to 3 dominant, well-separated hue peaks
     peaks = _hue_peaks(hist, min_sep=12, max_peaks=3)
@@ -124,7 +146,26 @@ def detect_theme(
     # drop negligible clusters (compression fringe, particle tints) but always
     # keep at least the two dominant hand colours if present.
     kept = [c for i, c in enumerate(clusters) if i < 2 or c.weight >= 0.15]
-    return ThemeModel(clusters=kept, sat_min=sat_min, val_min=val_min)
+    # Detector saturation floor from the palest kept colour, so a pastel hand is
+    # admitted while the near-zero background stays out. Never above the cap.
+    pale = min((c.sat for c in kept), default=cap_sat_min)
+    final_sat_min = int(np.clip(0.55 * pale, 30, cap_sat_min))
+    return ThemeModel(clusters=kept, sat_min=final_sat_min, val_min=val_min)
+
+
+def _otsu(x: np.ndarray) -> int:
+    """Generic Otsu split (0..255) — the value maximising between-class variance,
+    i.e. the valley between two populations (here: background vs note saturation)."""
+    if x.size < 50:
+        return 40
+    hist = np.bincount(x.astype(np.int32).clip(0, 255), minlength=256).astype(np.float64)
+    total = hist.sum()
+    omega = np.cumsum(hist)
+    mu = np.cumsum(hist * np.arange(256))
+    denom = omega * (total - omega)
+    denom[denom == 0] = 1e-9
+    sigma_b = (mu[-1] * omega - mu) ** 2 / denom
+    return int(np.argmax(sigma_b))
 
 
 def _otsu_threshold(v: np.ndarray) -> int:
