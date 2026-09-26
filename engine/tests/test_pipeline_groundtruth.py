@@ -110,6 +110,39 @@ def test_keylight_onset_accuracy_and_hand_sync():
     assert starts[-1] - starts[0] < 0.02
 
 
+def test_musicxml_measures_are_time_complete():
+    # Every voice in every measure must sum to exactly one measure of divisions —
+    # overlapping/held notes flattened to a single voice must not overflow or
+    # push later onsets off their beat (the "timing really off" regression).
+    import xml.etree.ElementTree as ET
+    from synthesia.exporters import _build_musicxml
+    from synthesia.model import NoteEvent, Hand
+    from synthesia.tempo import TempoAnalysis
+
+    tempo = TempoAnalysis(120.0, 0.5, 0.0, (4, 4), [], 0.9)
+    # dense overlaps: a held left-hand note under a right-hand run, plus a chord
+    notes = [
+        NoteEvent(1, 48, 0.0, 2.0, Hand.LEFT, 80),      # 2s held bass
+        NoteEvent(2, 60, 0.0, 0.5, Hand.RIGHT, 90),
+        NoteEvent(3, 64, 0.0, 0.5, Hand.RIGHT, 90),     # chord w/ 60
+        NoteEvent(4, 67, 0.5, 0.9, Hand.RIGHT, 90),     # overlaps into next onset
+        NoteEvent(5, 72, 0.75, 1.5, Hand.RIGHT, 90),
+        NoteEvent(6, 50, 2.0, 4.0, Hand.LEFT, 80),
+    ]
+    xml = _build_musicxml(notes, tempo)
+    root = ET.fromstring(xml)
+    per = 4 * 4  # divisions * beats
+    for meas in root.iter("measure"):
+        sums = {1: 0, 2: 0}
+        for note in meas.findall("note"):
+            if note.find("chord") is not None:
+                continue
+            st = note.find("staff")
+            sums[int(st.text) if st is not None else 1] += int(note.find("duration").text)
+        for staff, tot in sums.items():
+            assert tot == per, f"measure {meas.get('number')} staff {staff}: {tot} != {per}"
+
+
 def test_no_hallucinated_notes_on_silence():
     # a clip with a single note must not invent extras (§51)
     notes = [SynthNote(72, 1.0, 1.5, "right", 100)]
