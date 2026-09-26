@@ -129,12 +129,19 @@ def detect_keyboard_band(gray: np.ndarray) -> tuple[int, int]:
     bright region: the keyboard body (white keys, with black keys interleaved)
     stays bright until the dark roll begins."""
     h, w = gray.shape
-    brightness = cv2.GaussianBlur(gray.mean(axis=1).reshape(-1, 1), (1, 1), 0).ravel()
+    # White keys stay bright all the way up to the strike line even where black
+    # keys sit between them. A ROW MEAN, however, is dragged down through the
+    # black-key band (dark blacks interleaved with the white gaps) and stops the
+    # upward walk short — capturing only the white aprons below the black keys and
+    # wrecking pitch detection. A high per-row percentile follows the white-key
+    # columns instead, so the band spans the full keyboard including black keys.
+    brightness = np.percentile(gray, 80, axis=1).astype(np.float64)
     brightness = np.convolve(brightness, np.ones(3) / 3, mode="same")
 
-    # brightness of the bottom-most rows anchors the "white key" level
-    kb_level = float(np.median(brightness[int(h * 0.95):]))
-    if kb_level < 90:  # bottom isn't bright -> keyboard may not be flush (rare)
+    # a bright key level anchored from the lower half (robust to a dark bottom
+    # letterbox, which would otherwise zero out the bottom-row anchor)
+    kb_level = float(np.percentile(brightness[int(h * 0.5):], 90))
+    if kb_level < 90:  # keyboard may not be bright (rare)
         kb_level = float(brightness.max())
     thr = max(90.0, kb_level * 0.55)
 
@@ -143,7 +150,7 @@ def detect_keyboard_band(gray: np.ndarray) -> tuple[int, int]:
     while bottom > h * 0.5 and brightness[bottom] < thr:
         bottom -= 1
     top = bottom
-    while top > int(h * 0.30) and brightness[top - 1] >= thr:
+    while top > int(h * 0.15) and brightness[top - 1] >= thr:
         top -= 1
     # guard against absurdly thin detection
     if bottom - top < h * 0.04:
