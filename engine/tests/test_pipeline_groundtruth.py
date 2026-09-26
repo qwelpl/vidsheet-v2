@@ -75,6 +75,30 @@ def test_30fps_source():
     assert g["mean_onset_error_ms"] < 35
 
 
+def test_keyboard_band_spans_black_keys():
+    # The keyboard band must reach up past the black-key region, not stop at the
+    # white aprons below it. A row MEAN is dragged down through the black-key band
+    # (dark blacks interleaved) and stops short; a high per-row percentile follows
+    # the white-key columns up to the strike line. Also survive a dark bottom
+    # letterbox that would zero a bottom-row brightness anchor.
+    import numpy as np
+    from synthesia.keyboard import detect_keyboard_band
+
+    h, w = 300, 520
+    img = np.zeros((h, w), np.uint8)          # dark roll + letterbox
+    top_true, bottom_true = 150, 280
+    img[top_true:bottom_true, :] = 245        # white keys, full band
+    # black keys occupy the UPPER half of the band, every other 20px column
+    for x in range(0, w, 40):
+        img[top_true:top_true + 65, x:x + 20] = 15
+    # dark bottom letterbox below the keyboard
+    img[bottom_true:, :] = 0
+
+    top, bottom = detect_keyboard_band(img)
+    assert top <= top_true + 8, f"band top {top} cut into black keys ({top_true})"
+    assert abs(bottom - bottom_true) <= 8
+
+
 def test_keylight_repeats_split_on_coverage_dip():
     # A key-highlight repeat re-strikes a key that only *dims* between hits (its
     # colour coverage dips and recovers without ever fully clearing) and whose
