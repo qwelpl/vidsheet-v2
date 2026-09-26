@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -183,12 +184,37 @@ def job_video(job_id: str):
     return FileResponse(job.video_path)
 
 
+_MSCORE = shutil.which("mscore") or shutil.which("musescore") or shutil.which("MuseScore")
+
+
+def _render_pdf(d: str) -> str:
+    """Engrave score.musicxml to a sheet-music PDF via MuseScore. Rendered fresh
+    so it reflects the latest (possibly UI-edited) score."""
+    src = os.path.join(d, "score.musicxml")
+    if not os.path.exists(src):
+        raise HTTPException(404, "score not available")
+    if not _MSCORE:
+        raise HTTPException(501, "PDF export needs MuseScore (mscore) on PATH")
+    pdf = os.path.join(d, "score.pdf")
+    try:
+        r = subprocess.run([_MSCORE, src, "-o", pdf], capture_output=True,
+                           text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(500, "PDF render timed out")
+    if not os.path.exists(pdf):
+        raise HTTPException(500, f"PDF render failed: {r.stderr[-300:]}")
+    return pdf
+
+
 @app.get("/api/jobs/{job_id}/export/{fmt}")
 def job_export(job_id: str, fmt: str):
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "job not found")
     d = _job_dir(job_id)
+    if fmt == "pdf":
+        return FileResponse(_render_pdf(d), filename="sheet-music.pdf",
+                            media_type="application/pdf")
     files = {"midi": "reconstruction.mid", "csv": "notes.csv",
              "musicxml": "score.musicxml", "json": "project.json"}
     fname = files.get(fmt)

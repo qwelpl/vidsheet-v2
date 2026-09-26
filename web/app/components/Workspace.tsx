@@ -198,9 +198,9 @@ export default function Workspace({ jobId, project, onExit }: { jobId: string; p
           </button>
           {exportOpen && (
             <div className="panel" style={{ position: "absolute", right: 0, top: 34, borderRadius: 8, padding: 6, zIndex: 20, minWidth: 150 }}>
-              {["midi", "musicxml", "csv", "json"].map((f) => (
+              {["pdf", "midi", "musicxml", "csv", "json"].map((f) => (
                 <button key={f} onClick={() => doExport(f)} disabled={exporting} className="btn btn-ghost" style={{ display: "flex", width: "100%", justifyContent: "flex-start" }}>
-                  {f.toUpperCase()}
+                  {f === "pdf" ? "PDF (sheet music)" : f.toUpperCase()}
                 </button>
               ))}
             </div>
