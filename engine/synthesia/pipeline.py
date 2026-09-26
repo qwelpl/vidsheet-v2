@@ -156,7 +156,8 @@ def analyze(video_path: str, opts: Options,
                       "progress": 0.08 + 0.62 * min(1.0, n / total)})
         import numpy as _np
         notes = keylight.extract_notes(kcol.hist, geom, meta.fps,
-                                       audio_onsets if audio_onsets is not None else _np.array([]))
+                                       audio_onsets if audio_onsets is not None else _np.array([]),
+                                       fill_thr=kcol.sampler.fill_thr)
         prog({"stage": "reconstruct",
               "message": f"{len(notes)} notes (key-highlight)", "progress": 0.80})
     else:
@@ -199,6 +200,17 @@ def analyze(video_path: str, opts: Options,
         if dropped:
             msg += f"; dropped {dropped} silent short artifacts"
         prog({"stage": "audio", "message": msg, "progress": 0.84})
+
+    # align notes struck together (chords / both hands on a beat) so tiny
+    # per-lane frame skew doesn't read as the hands being out of sync (§10)
+    from .events import align_chords, resolve_same_pitch_overlaps
+    aligned = align_chords(notes, audio_onsets)
+    if aligned:
+        prog({"stage": "audio", "message": f"Aligned {aligned} simultaneous onsets",
+              "progress": 0.85})
+    # a key can't sound twice at once: trim/drop any same-pitch overlaps that
+    # timing nudges introduced, keeping genuine repeats distinct (§12)
+    resolve_same_pitch_overlaps(notes)
 
     tempo = estimate_tempo(notes, meta.fps)
     quantized = quantize(notes, tempo)

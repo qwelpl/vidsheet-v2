@@ -16,11 +16,13 @@ from synthesia.keyboard import build_geometry, temporal_median
 from synthesia import videoio
 
 
-def _run(notes, cfg):
+def _run(notes, cfg, detector="auto"):
     d = tempfile.mkdtemp()
     path = os.path.join(d, "clip.mp4")
     truth = generate_video(path, notes, cfg)
-    result = analyze(path, Options.for_preset("maximum"), truth=truth)
+    opts = Options.for_preset("maximum")
+    opts.detector = detector
+    result = analyze(path, opts, truth=truth)
     return result
 
 
@@ -92,6 +94,20 @@ def test_keylight_repeats_split_on_coverage_dip():
     held = [0.9] * 40                                # one sustained note
     t2 = [k * dt for k in range(len(held))]
     assert _restrike_times(held, t2, 0, len(held) - 1, dt, 2) == []
+
+
+def test_keylight_onset_accuracy_and_hand_sync():
+    # Key-highlight path must place onsets sub-frame and keep a two-hand chord
+    # tight, not skewed by which frame each key happened to light on (§10).
+    left = [SynthNote(48 + i * 4, 1.0, 1.8, "left", 80) for i in range(3)]   # chord
+    right = [SynthNote(72 + i * 4, 1.0, 1.8, "right", 90) for i in range(3)]  # chord
+    result = _run(left + right, SynthConfig(), detector="keylight")
+    g = result.ground_truth
+    assert g["recall"] == 1.0
+    assert g["mean_onset_error_ms"] < 20
+    # every note nominally at t=1.0 should land within a frame of the others
+    starts = sorted(n.start for n in result.notes)
+    assert starts[-1] - starts[0] < 0.02
 
 
 def test_no_hallucinated_notes_on_silence():

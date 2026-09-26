@@ -54,15 +54,15 @@ class KeyLightSampler:
         x1 = min(self.geom.width, int(round(lane.center + xw)) + 1)
         return y0, y1, x0, x1
 
-    def sample(self, bgr: np.ndarray) -> dict[int, tuple[int, float]]:
-        """Return {midi: (cluster_index, fill_fraction)} for every lit key in the
-        frame. The fill fraction (share of the key body matching the note colour)
-        is kept, not just a lit/unlit flag: a fast repeat re-strikes a key that
-        only *dims* between hits without ever crossing below ``fill_thr``, so the
-        coverage envelope — not a full unlit gap — is what separates the repeats
-        (§12)."""
+    def sample_raw(self, bgr: np.ndarray) -> dict[int, tuple[int, float]]:
+        """Return {midi: (best_cluster, fill_fraction)} for EVERY key, including
+        sub-threshold coverage. Keeping the raw fraction (share of the key body
+        matching the note colour) — not just a lit/unlit flag — is what lets us
+        (a) separate a fast repeat that only *dims* between hits without clearing
+        ``fill_thr`` (§12), and (b) place the attack sub-frame by interpolating
+        where coverage crosses the lit threshold as the key lights up (§10, §18)."""
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        lit: dict[int, tuple[int, float]] = {}
+        out: dict[int, tuple[int, float]] = {}
         for midi, lane in self.geom.lanes.items():
             y0, y1, x0, x1 = self._region(lane)
             if y1 <= y0 or x1 <= x0:
@@ -78,9 +78,13 @@ class KeyLightSampler:
                 frac = float(m.mean())
                 if frac > best_frac:
                     best_frac, best_c = frac, ci
-            if best_frac >= self.fill_thr:
-                lit[midi] = (best_c, best_frac)
-        return lit
+            out[midi] = (best_c, best_frac)
+        return out
+
+    def sample(self, bgr: np.ndarray) -> dict[int, tuple[int, float]]:
+        """Lit keys only (coverage >= ``fill_thr``). Used to test applicability."""
+        return {m: (c, f) for m, (c, f) in self.sample_raw(bgr).items()
+                if f >= self.fill_thr}
 
 
 def applicable(geom: KeyboardGeometry, theme: ThemeModel,
@@ -108,28 +112,60 @@ class KeyLightCollector:
         self.hist: dict[int, _LaneLight] = {m: _LaneLight() for m in geom.lanes}
 
     def add(self, time: float, bgr: np.ndarray) -> None:
-        lit = self.sampler.sample(bgr)
+        raw = self.sampler.sample_raw(bgr)
+        thr = self.sampler.fill_thr
         for m, lane in self.hist.items():
             lane.times.append(time)
-            cf = lit.get(m)
-            lane.lit.append(cf[0] if cf is not None else -1)
-            lane.fill.append(cf[1] if cf is not None else 0.0)
+            c, f = raw.get(m, (-1, 0.0))
+            lane.lit.append(c if f >= thr else -1)
+            lane.fill.append(f)
 
 
 def extract_notes(hist: dict[int, _LaneLight], geom: KeyboardGeometry, fps: float,
-                  audio_onsets: np.ndarray, min_frames: int = 2) -> list[NoteEvent]:
+                  audio_onsets: np.ndarray, min_frames: int = 2,
+                  fill_thr: float = 0.4) -> list[NoteEvent]:
     frame_dt = 1.0 / fps
     onsets = np.sort(audio_onsets) if audio_onsets is not None else np.array([])
     notes: list[NoteEvent] = []
     for midi, lane in hist.items():
-        notes.extend(_lane_notes(midi, lane, geom, frame_dt, onsets, min_frames))
+        notes.extend(_lane_notes(midi, lane, geom, frame_dt, onsets, min_frames,
+                                 fill_thr))
     notes.sort(key=lambda n: (n.start, n.midi))
     for i, n in enumerate(notes):
         n.id = i + 1
     return notes
 
 
-def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames):
+def _subframe_onset(fill, times, i, thr) -> float:
+    """Attack instant: interpolate where coverage crosses ``thr`` between the last
+    dark frame and the first lit one, so the onset is placed to a fraction of a
+    frame instead of snapping to the frame grid (the main source of tiny
+    inter-hand timing skew)."""
+    if i <= 0:
+        return times[i]
+    f0, f1 = fill[i - 1], fill[i]
+    if f1 <= f0 or f1 < thr:
+        return times[i]
+    frac = min(max((thr - f0) / (f1 - f0), 0.0), 1.0)
+    return times[i - 1] + frac * (times[i] - times[i - 1])
+
+
+def _subframe_offset(fill, times, last_lit, n, thr) -> float:
+    """Release instant: interpolate where coverage falls back through ``thr``
+    between the last lit frame and the first dark one — avoids the full-frame
+    overhang of snapping the release to ``times[last_lit+1]``."""
+    if last_lit + 1 >= n:
+        dt = (times[last_lit] - times[last_lit - 1]) if last_lit > 0 else 0.0
+        return times[last_lit] + dt
+    f0, f1 = fill[last_lit], fill[last_lit + 1]
+    if f0 <= f1:
+        return times[last_lit + 1]
+    frac = min(max((f0 - thr) / (f0 - f1), 0.0), 1.0)
+    return times[last_lit] + frac * (times[last_lit + 1] - times[last_lit])
+
+
+def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames,
+                fill_thr=0.4):
     times = lane.times
     lit = lane.lit
     fill = lane.fill
@@ -159,8 +195,8 @@ def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames):
             j += 1
         run_len = last_lit - i + 1
         if run_len >= min_frames:
-            t_on = times[i]
-            t_off = times[min(last_lit + 1, n - 1)]  # release ~ next frame edge
+            t_on = _subframe_onset(fill, times, i, fill_thr)
+            t_off = _subframe_offset(fill, times, last_lit, n, fill_thr)
             cluster = int(np.bincount(clusters).argmax()) if clusters else 0
             # Split into repeated notes at every re-strike of THIS key. The
             # evidence is the key's own illumination envelope: a re-hit makes the
