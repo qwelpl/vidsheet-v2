@@ -169,7 +169,8 @@ def _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
 _TYPE_BY_DIV = {16: "whole", 8: "half", 4: "quarter", 2: "eighth", 1: "16th"}
 
 
-def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions):
+def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
+                 min_rest_div=2):
     # Gather onsets in this measure, grouped by start division (chords). A single
     # MusicXML voice is monophonic, so overlapping notes are flattened: each note
     # is spaced to the NEXT onset, guaranteeing every onset lands on its true
@@ -190,10 +191,16 @@ def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions):
         next_pos = positions[k + 1] if k + 1 < len(positions) else per_measure
         note_dur = min(to_div(n.end) - to_div(n.start) for n in chord)
         dur = max(1, min(note_dur, next_pos - pos, per_measure - pos))
+        # Absorb a sub-beat trailing gap (< min_rest_div) into the note as legato:
+        # consecutive notes are near-contiguous in real time, and rounding their
+        # end down while the next onset rounds up otherwise leaves a spurious
+        # 16th-rest between them (staccato pauses peppered through the score).
+        if 0 < next_pos - (pos + dur) < min_rest_div:
+            dur = next_pos - pos
         for i, n in enumerate(chord):
             _write_pitch(out, n, dur, staff, divisions, is_chord=(i > 0))
         cursor = pos + dur
-        # note shorter than the gap to the next onset -> pad with a rest so the
+        # a genuine gap (>= min_rest_div) to the next onset stays a rest so the
         # next onset still lands exactly on its division
         if cursor < next_pos:
             _write_rest(out, next_pos - cursor, staff, divisions)
