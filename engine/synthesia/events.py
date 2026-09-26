@@ -232,6 +232,96 @@ def cleanup_fragments(notes: list[NoteEvent], merge_gap: float = 0.045,
     return kept
 
 
+def align_chords(notes: list[NoteEvent], onsets=None, window: float = 0.033) -> int:
+    """Snap near-simultaneous onsets across lanes to one shared time (§10, §18).
+
+    Notes meant to be struck together — a chord, or the two hands landing on the
+    same beat — are detected on slightly different frames and drift a few
+    milliseconds apart, which reads as the hands being out of sync. Notes whose
+    onsets fall inside a tight ``window`` are almost certainly one event (a real
+    arpeggio/roll spreads wider than a frame), so they are moved to a common
+    onset: the nearby audio attack if one exists, else the group's median. Each
+    note keeps its own duration. Returns how many notes were moved."""
+    import numpy as _np
+    if len(notes) < 2:
+        return 0
+    ons = _np.sort(onsets) if onsets is not None and len(onsets) else None
+    order = sorted(range(len(notes)), key=lambda k: notes[k].start)
+    moved = 0
+    grp: list[int] = []
+    anchor = None
+
+    def _flush(g):
+        nonlocal moved
+        if len(g) < 2:
+            return
+        starts = [notes[k].start for k in g]
+        target = float(_np.median(starts))
+        if ons is not None:
+            j = int(_np.searchsorted(ons, target))
+            cand = [ons[x] for x in (j - 1, j) if 0 <= x < ons.size]
+            near = [c for c in cand if abs(c - target) <= window]
+            if near:
+                target = float(min(near, key=lambda c: abs(c - target)))
+        for k in g:
+            n = notes[k]
+            if abs(n.start - target) <= 1e-4:
+                continue
+            dur = n.duration
+            if target >= n.end:            # never invert a short note
+                continue
+            n.start = target
+            n.end = target + dur
+            moved += 1
+
+    for k in order:
+        s = notes[k].start
+        if anchor is None or s - anchor <= window:
+            if anchor is None:
+                anchor = s
+            grp.append(k)
+        else:
+            _flush(grp)
+            grp = [k]
+            anchor = s
+    _flush(grp)
+    if moved:
+        notes.sort(key=lambda n: (n.start, n.midi))
+        for i, n in enumerate(notes):
+            n.id = i + 1
+    return moved
+
+
+def resolve_same_pitch_overlaps(notes: list[NoteEvent], drop_min: float = 0.022,
+                                eps: float = 1e-3) -> int:
+    """Trim overlaps between consecutive notes of the SAME pitch (§12).
+
+    One key cannot sound twice at once, so after sub-frame timing and chord
+    alignment nudge onsets around, a note that now reaches past the next hit of
+    the same key has its release trimmed back to that hit — the repeats are kept
+    distinct (unlike a merge). A note trimmed shorter than ``drop_min`` was a
+    spurious duplicate and is dropped. Returns notes removed."""
+    by_pitch: dict[int, list[NoteEvent]] = {}
+    for n in notes:
+        by_pitch.setdefault(n.midi, []).append(n)
+    drop: set[int] = set()
+    for group in by_pitch.values():
+        group.sort(key=lambda n: n.start)
+        for a, b in zip(group, group[1:]):
+            if a.end > b.start - eps:
+                a.end = b.start - eps
+            if a.end - a.start < drop_min:
+                drop.add(id(a))
+    if not drop:
+        return 0
+    kept = [n for n in notes if id(n) not in drop]
+    notes[:] = kept
+    notes.sort(key=lambda n: (n.start, n.midi))
+    for i, n in enumerate(notes):
+        n.id = i + 1
+    return len(drop)
+
+
 def _is_flicker(frames, j, occ) -> bool:
     # a single missing occupied frame surrounded by occupied ones
     return False  # occupancy already tolerant; kept explicit for clarity
