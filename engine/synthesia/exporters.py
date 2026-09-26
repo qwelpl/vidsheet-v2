@@ -99,8 +99,21 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
     phase = tempo.beat_phase
     beats_per_measure, beat_type = tempo.time_signature
 
-    def to_div(t: float) -> int:
+    per_measure = divisions * beats_per_measure
+
+    def _raw_div(t: float) -> int:
         return int(round((t - phase) / period * divisions))
+
+    # Anchor to the first onset's measure so the score doesn't start with a run
+    # of empty leading measures (or negative divisions when a note precedes the
+    # estimated beat-0 phase). Whole-measure shift keeps the downbeat grid intact.
+    offset = 0
+    if notes:
+        min_d = min(_raw_div(n.start) for n in notes)
+        offset = (min_d // per_measure) * per_measure
+
+    def to_div(t: float) -> int:
+        return _raw_div(t) - offset
 
     left = sorted([n for n in notes if n.hand != Hand.RIGHT], key=lambda n: n.start)
     right = sorted([n for n in notes if n.hand == Hand.RIGHT], key=lambda n: n.start)
@@ -157,22 +170,34 @@ _TYPE_BY_DIV = {16: "whole", 8: "half", 4: "quarter", 2: "eighth", 1: "16th"}
 
 
 def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions):
-    # gather note-onsets within this measure, grouped by start division (chords)
+    # Gather onsets in this measure, grouped by start division (chords). A single
+    # MusicXML voice is monophonic, so overlapping notes are flattened: each note
+    # is spaced to the NEXT onset, guaranteeing every onset lands on its true
+    # division (a held note is truncated rather than shoved past the next attack,
+    # which is what previously pushed everything late and overflowed the measure).
     events: dict[int, list] = {}
     for n in notes:
         sd = to_div(n.start)
         if m0 <= sd < m1:
             events.setdefault(sd - m0, []).append(n)
+    positions = sorted(events)
     cursor = 0
-    for pos in sorted(events):
+    for k, pos in enumerate(positions):
         if pos > cursor:
             _write_rest(out, pos - cursor, staff, divisions)
+            cursor = pos
         chord = events[pos]
-        dur = max(1, min(min(to_div(n.end) - to_div(n.start) for n in chord),
-                         per_measure - pos))
+        next_pos = positions[k + 1] if k + 1 < len(positions) else per_measure
+        note_dur = min(to_div(n.end) - to_div(n.start) for n in chord)
+        dur = max(1, min(note_dur, next_pos - pos, per_measure - pos))
         for i, n in enumerate(chord):
             _write_pitch(out, n, dur, staff, divisions, is_chord=(i > 0))
         cursor = pos + dur
+        # note shorter than the gap to the next onset -> pad with a rest so the
+        # next onset still lands exactly on its division
+        if cursor < next_pos:
+            _write_rest(out, next_pos - cursor, staff, divisions)
+            cursor = next_pos
     if cursor < per_measure:
         _write_rest(out, per_measure - cursor, staff, divisions)
 
