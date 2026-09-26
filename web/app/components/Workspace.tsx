@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { Project, Note, videoUrl, exportUrl } from "@/lib/api";
+import { Project, Note, videoUrl, exportUrl, syncNotes } from "@/lib/api";
 import { fmtTime, confidenceTone } from "@/lib/render";
 import PianoRoll from "./PianoRoll";
 import ReconView from "./ReconView";
@@ -25,6 +25,7 @@ export default function Workspace({ jobId, project, onExit }: { jobId: string; p
   const [pxPerSec, setPxPerSec] = useState(90);
   const [scrollX, setScrollX] = useState(0);
   const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [audioMode, setAudioMode] = useState<AudioMode>("original");
   const synth = useRef<PianoSynth | null>(null);
   const prevT = useRef(0);
@@ -149,6 +150,25 @@ export default function Workspace({ jobId, project, onExit }: { jobId: string; p
     if (time < scrollX || time > scrollX + win) setScrollX(Math.max(0, time - win * 0.3));
   }, [time, pxPerSec, scrollX]);
 
+  // push current (edited) notes to the server, then download the regenerated file
+  const doExport = useCallback(async (fmt: string) => {
+    setExporting(true);
+    try {
+      await syncNotes(jobId, notes);
+      const a = document.createElement("a");
+      a.href = exportUrl(jobId, fmt);
+      a.download = "";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      alert("Export failed: " + (e as Error).message);
+    } finally {
+      setExporting(false);
+      setExportOpen(false);
+    }
+  }, [jobId, notes]);
+
   const uncertainCount = useMemo(() => notes.filter((n) => confidenceTone(n) !== "high").length, [notes]);
   const src = videoUrl(jobId);
 
@@ -173,13 +193,15 @@ export default function Workspace({ jobId, project, onExit }: { jobId: string; p
           ))}
         </div>
         <div style={{ position: "relative" }}>
-          <button className="btn btn-primary" onClick={() => setExportOpen((o) => !o)}>Export ▾</button>
+          <button className="btn btn-primary" onClick={() => setExportOpen((o) => !o)} disabled={exporting}>
+            {exporting ? "Exporting…" : "Export ▾"}
+          </button>
           {exportOpen && (
             <div className="panel" style={{ position: "absolute", right: 0, top: 34, borderRadius: 8, padding: 6, zIndex: 20, minWidth: 150 }}>
               {["midi", "musicxml", "csv", "json"].map((f) => (
-                <a key={f} href={exportUrl(jobId, f)} className="btn btn-ghost" style={{ display: "flex", width: "100%", justifyContent: "flex-start" }}>
+                <button key={f} onClick={() => doExport(f)} disabled={exporting} className="btn btn-ghost" style={{ display: "flex", width: "100%", justifyContent: "flex-start" }}>
                   {f.toUpperCase()}
-                </a>
+                </button>
               ))}
             </div>
           )}

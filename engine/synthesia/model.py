@@ -8,7 +8,7 @@ discarded — quantization is a derived, separate representation.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from enum import Enum
 from typing import Optional
 
@@ -123,6 +123,18 @@ class NoteEvent:
         d["duration"] = self.duration
         d["overall_confidence"] = round(self.overall_confidence, 4)
         return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "NoteEvent":
+        """Rebuild from a to_dict() payload (round-trips UI edits). Derived
+        fields (name, duration, overall_confidence) are ignored."""
+        fields = {f.name for f in dataclass_fields(cls)}
+        kw = {k: v for k, v in d.items() if k in fields}
+        if "hand" in kw and not isinstance(kw["hand"], Hand):
+            kw["hand"] = Hand(kw["hand"])
+        if "verification" in kw and not isinstance(kw["verification"], VerificationStatus):
+            kw["verification"] = VerificationStatus(kw["verification"])
+        return cls(**kw)
 
 
 # ---------------------------------------------------------------------------

@@ -157,3 +157,14 @@ export async function getResult(id: string): Promise<Project> {
 
 export const videoUrl = (id: string) => `${API}/api/jobs/${id}/video`;
 export const exportUrl = (id: string, fmt: string) => `${API}/api/jobs/${id}/export/${fmt}`;
+
+// Persist UI-edited notes so the server regenerates the export files (MIDI etc.)
+// to match the corrections before the user downloads them.
+export async function syncNotes(id: string, notes: Note[]): Promise<void> {
+  const r = await fetch(`${API}/api/jobs/${id}/notes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notes }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}

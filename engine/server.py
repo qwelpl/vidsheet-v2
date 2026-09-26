@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -195,6 +195,40 @@ def job_export(job_id: str, fmt: str):
     if not fname or not os.path.exists(os.path.join(d, fname)):
         raise HTTPException(404, "export not available")
     return FileResponse(os.path.join(d, fname), filename=fname)
+
+
+@app.post("/api/jobs/{job_id}/notes")
+async def update_notes(job_id: str, request: Request):
+    """Persist UI-edited notes and regenerate the export files so a subsequent
+    download reflects the corrections (pitch, timing, velocity, hand, deletes)."""
+    job = JOBS.get(job_id)
+    if not job or job.result is None:
+        raise HTTPException(404, "job not found")
+    body = await request.json()
+    raw = body.get("notes", body if isinstance(body, list) else None)
+    if not isinstance(raw, list):
+        raise HTTPException(400, "expected a notes array")
+    from synthesia.model import NoteEvent
+    from synthesia.tempo import TempoAnalysis
+    notes = [NoteEvent.from_dict(n) for n in raw]
+    notes.sort(key=lambda n: (n.start, n.midi))
+    for i, n in enumerate(notes):
+        n.id = i + 1
+    t = job.result.get("tempo", {}) or {}
+    tempo = TempoAnalysis(
+        bpm=float(t.get("bpm", 120.0)),
+        beat_period=float(t.get("beat_period", 0.5)),
+        beat_phase=float(t.get("beat_phase", 0.0)),
+        time_signature=tuple(t.get("time_signature", [4, 4])),
+        segments=[], confidence=float(t.get("confidence", 0.5)),
+    )
+    d = _job_dir(job_id)
+    write_midi(os.path.join(d, "reconstruction.mid"), notes, tempo)
+    write_csv(os.path.join(d, "notes.csv"), notes)
+    write_musicxml(os.path.join(d, "score.musicxml"), notes, tempo)
+    job.result["notes"] = [n.to_dict() for n in notes]
+    write_json(os.path.join(d, "project.json"), job.result)
+    return {"ok": True, "notes": len(notes)}
 
 
 @app.get("/api/health")
