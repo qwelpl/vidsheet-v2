@@ -23,6 +23,15 @@ export function isBlack(midi: number): boolean {
   return [1, 3, 6, 8, 10].includes(((midi % 12) + 12) % 12);
 }
 
+const NOTE_NAMES_SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+// MIDI number -> scientific pitch name, e.g. 60 -> "C4". Mirrors the engine's
+// midi_to_name so edited notes keep the same naming convention.
+export function midiName(midi: number): string {
+  const octave = Math.floor(midi / 12) - 1;
+  return NOTE_NAMES_SHARP[((midi % 12) + 12) % 12] + octave;
+}
+
 // Predicted vertical span (roll pixels) of a note bar at time t, mirroring the
 // engine renderer so the reconstruction view matches the original geometry.
 export function noteBarAt(

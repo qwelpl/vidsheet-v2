@@ -1,6 +1,8 @@
 "use client";
+import { useState } from "react";
 import { Note, Project } from "@/lib/api";
-import { HAND_COLOR, confidenceTone } from "@/lib/render";
+import { HAND_COLOR, confidenceTone, midiName } from "@/lib/render";
+import PianoPopup from "./PianoPopup";
 
 interface Props {
   project: Project;
@@ -25,14 +27,36 @@ function Bar({ label, value }: { label: string; value: number }) {
 }
 
 export default function Inspector({ project, note, onEdit, onDelete }: Props) {
+  const [pianoOpen, setPianoOpen] = useState(false);
   return (
     <div style={{ height: "100%", overflow: "auto", padding: 12 }}>
       {note ? (
         <div className="fade-in">
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, position: "relative" }}>
             <span style={{ width: 12, height: 12, borderRadius: 3, background: HAND_COLOR[note.hand] }} />
-            <span style={{ fontSize: 18, fontWeight: 600 }} className="mono">{note.name}</span>
+            <button
+              className="mono"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setPianoOpen((o) => !o)}
+              title="Change pitch"
+              style={{ fontSize: 18, fontWeight: 600, background: "none", border: 0, color: "var(--text)",
+                cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: 4 }}
+            >
+              {note.name}<span style={{ fontSize: 11, color: "var(--text-dim)" }}>▾</span>
+            </button>
             <span className="chip">MIDI {note.midi}</span>
+            {pianoOpen && (
+              <PianoPopup
+                value={note.midi}
+                lowMidi={project.geometry.low_midi}
+                highMidi={project.geometry.high_midi}
+                onPick={(m) => {
+                  onEdit(note.id, { midi: m, name: midiName(m), pitch_confidence: 1, manually_corrected: true });
+                  setPianoOpen(false);
+                }}
+                onClose={() => setPianoOpen(false)}
+              />
+            )}
             {confidenceTone(note) !== "high" && (
               <span className="chip" style={{ color: confidenceTone(note) === "low" ? "#e0533a" : "#e0a52a" }}>
                 review
