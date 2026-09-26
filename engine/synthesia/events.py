@@ -109,6 +109,17 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
     # leading-edge (max y_bottom) reaching the strike band => occupied
     bottom = np.array([max(r.y_bottom for r in rr) for rr in h.runs])
     occ = bottom >= (strike - band)
+    # A held note whose bottom is hidden by a hit-flash strip clamps its coloured
+    # edge tens of pixels short of the strike line, so tight occupancy drops after
+    # a frame or two. Detect the note is still sounding by the edge PLATEAUING in a
+    # wider hold zone rather than descending on (a fresh approaching bar). On a
+    # clean render the edge passes straight through the strike and never plateaus,
+    # so this never fires there. bottom_s is median-smoothed to ignore the few-
+    # pixel oscillation of a clamped edge.
+    bottom_s = _med3(bottom)
+    hold = bottom >= (strike - max(band, strike * 0.09))
+    onset_frames = [k for k in range(n) if occ[k] and (k == 0 or not occ[k - 1])]
+    next_onset = _next_onset_after(onset_frames, n)
 
     notes: list[NoteEvent] = []
     i = 0
@@ -122,6 +133,13 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
         # frame gaps (compression flicker), but a real repeat gap ends it.
         j = i
         while j + 1 < n and (occ[j + 1] or _is_flicker(frames, j, occ)):
+            j += 1
+        # then keep extending through a HELD (clamped, non-descending) edge in the
+        # wider hold zone — a note behind a hit-flash — but never past the next
+        # note's onset in this lane, so repeats stay distinct.
+        cap = next_onset[onset_frame]
+        while (j + 1 < cap and hold[j + 1]
+               and bottom_s[j + 1] <= bottom_s[j] + 3):   # not a fresh descent
             j += 1
         offset_frame = j
 
@@ -163,18 +181,6 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
         if dur_from_len is not None and vel_ok and not top_clamped:
             offset = onset + dur_from_len
             dconf = 0.85
-            # A real falling bar covers the strike band for its entire length, so
-            # the occupancy span (onset->offset frame) is a hard lower bound on
-            # duration. When the visible-length measurement comes out shorter — a
-            # note-name label box or a translucent tail splits the coloured bar
-            # into pieces and truncates the trajectory run to the bright head —
-            # trust the occupancy: the bar demonstrably stayed at the line that
-            # long. Only applied on a clean constant-velocity approach, so strike
-            # glow on composited footage can't inflate it.
-            occ_span = h.times[offset_frame] - h.times[onset_frame]
-            if occ_span > dur_from_len + 1.5 / max(fps, 1.0):
-                offset = onset + occ_span
-                dconf = 0.8
         elif not no_release and offset_r > onset:
             offset = offset_r
             dconf = off_conf
@@ -182,6 +188,19 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
             offset = max(offset_r, onset + (h.times[offset_frame] - h.times[onset_frame]))
             dconf = 0.4
             off_flags = list(set(off_flags + ["offset_extrapolated"]))
+
+        # A held bar stays in the strike band (its coloured edge clamped just above
+        # the keys behind a hit-flash) until it shrinks away, so the last occupied
+        # frame is the note-off. The visible-length / released-edge estimates
+        # truncate when a label box or translucent tail splits the bar or the hit-
+        # flash hides its bottom, so take the bar-vanish time when it is later.
+        # Gated on a clean constant-velocity approach so composited strike glow
+        # (which yields no clean approach) can't inflate durations.
+        if not no_approach and vel_ok:
+            vanish = h.times[offset_frame]
+            if vanish > offset + 1.5 / max(fps, 1.0):
+                offset = vanish
+                dconf = min(dconf, 0.8)
 
         dur = offset - onset
         # A short detection that never showed a genuine descent at the fall
@@ -332,6 +351,32 @@ def resolve_same_pitch_overlaps(notes: list[NoteEvent], drop_min: float = 0.022,
     for i, n in enumerate(notes):
         n.id = i + 1
     return len(drop)
+
+
+def _med3(a: np.ndarray, k: int = 7) -> np.ndarray:
+    """Rolling-median smoothing over a window of ``k`` frames. Flattens the
+    few-pixel oscillation of a clamped (held) leading edge so it reads as a
+    plateau, while a genuinely descending bar still climbs across the window."""
+    a = a.astype(np.float64)
+    n = a.size
+    if n < 3:
+        return a.copy()
+    r = max(1, k // 2)
+    out = a.copy()
+    for i in range(n):
+        out[i] = np.median(a[max(0, i - r): min(n, i + r + 1)])
+    return out
+
+
+def _next_onset_after(onset_frames: list[int], n: int) -> np.ndarray:
+    """For each frame, the next onset frame strictly after it (or n if none)."""
+    import bisect
+    of = sorted(onset_frames)
+    nxt = np.full(n, n, dtype=int)
+    for f in range(n):
+        k = bisect.bisect_right(of, f)
+        nxt[f] = of[k] if k < len(of) else n
+    return nxt
 
 
 def _is_flicker(frames, j, occ) -> bool:
