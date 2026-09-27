@@ -125,7 +125,7 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
     # tight, so the held-note extension and repeat gaps are unaffected (no merge).
     if n >= 3:
         near = strike - 2.5 * band       # top of the hit zone
-        deep = strike - 5.0 * band       # the bar must have approached from here
+        deep = strike - 3.5 * band       # the bar must have approached from here
         pk = _med3(bottom, 3)
         rose = False
         for k in range(1, n - 1):
