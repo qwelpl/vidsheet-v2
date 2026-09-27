@@ -85,7 +85,15 @@ def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
                   fps: float, v_global: float,
                   min_gap_frames: int = 1) -> list[NoteEvent]:
     strike = float(geom.strike_y)
-    band = max(6.0, strike * 0.02)
+    # Occupancy band. A hit-flash strip above the keys caps how far a bar's
+    # coloured leading edge descends, so bars top out several pixels SHORT of the
+    # strike line — right at the band edge, where threshold noise drops roughly
+    # half of them (rapid repeats then detect every other note). Anchor the band
+    # to the measured hit level (where bars actually top out) instead of the
+    # geometric strike line; on a clean render that level is the strike itself, so
+    # the band is unchanged.
+    hit = _hit_level(hist, strike)
+    band = max(strike * 0.02, strike - hit + 6.0)
     # total analysed span, used to reject static bright elements (a persistent
     # hit-line glow / reflection reads as a note that never releases, §35).
     tmin = min((h.times[0] for h in hist.values() if h.times), default=0.0)
@@ -351,6 +359,26 @@ def resolve_same_pitch_overlaps(notes: list[NoteEvent], drop_min: float = 0.022,
     for i, n in enumerate(notes):
         n.id = i + 1
     return len(drop)
+
+
+def _hit_level(hist: dict, strike: float) -> float:
+    """The y a falling bar's leading edge actually tops out at. Normally the
+    strike line, but a hit-flash strip above the keys can cap it several pixels
+    short. Estimated as a high percentile of the per-bar leading-edge peaks (local
+    maxima in the lower roll), so onset occupancy can be anchored to it."""
+    peaks: list[float] = []
+    lo = strike * 0.8
+    for h in hist.values():
+        runs = h.runs
+        if len(runs) < 3:
+            continue
+        b = np.array([max((r.y_bottom for r in rr), default=0.0) for rr in runs])
+        for k in range(1, len(b) - 1):
+            if b[k] >= lo and b[k] >= b[k - 1] and b[k] >= b[k + 1]:
+                peaks.append(float(b[k]))
+    if len(peaks) < 20:
+        return strike
+    return float(np.percentile(peaks, 85))
 
 
 def _med3(a: np.ndarray, k: int = 7) -> np.ndarray:
