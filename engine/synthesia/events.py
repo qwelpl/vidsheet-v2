@@ -117,6 +117,23 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
     # leading-edge (max y_bottom) reaching the strike band => occupied
     bottom = np.array([max(r.y_bottom for r in rr) for rr in h.runs])
     occ = bottom >= (strike - band)
+    # Rapid-repeat rescue: a bar whose edge tops out a few pixels below the band
+    # (threshold noise on the hit-flash cap) leaves a PEAK in the leading edge that
+    # never trips ``occ`` — so every other note of a fast stream is lost. Mark the
+    # apex of any leading-edge peak that climbs into the hit zone (from clearly
+    # below it) as occupied, adding one onset per bar. This keeps the band itself
+    # tight, so the held-note extension and repeat gaps are unaffected (no merge).
+    if n >= 3:
+        near = strike - 2.5 * band       # top of the hit zone
+        deep = strike - 5.0 * band       # the bar must have approached from here
+        pk = _med3(bottom, 3)
+        rose = False
+        for k in range(1, n - 1):
+            if pk[k] <= deep:
+                rose = True
+            elif rose and pk[k] >= near and pk[k] >= pk[k - 1] and pk[k] > pk[k + 1]:
+                occ[k] = True
+                rose = False
     # A held note whose bottom is hidden by a hit-flash strip clamps its coloured
     # edge tens of pixels short of the strike line, so tight occupancy drops after
     # a frame or two. Detect the note is still sounding by the edge PLATEAUING in a
