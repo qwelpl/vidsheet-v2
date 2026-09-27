@@ -93,7 +93,7 @@ def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
     # geometric strike line; on a clean render that level is the strike itself, so
     # the band is unchanged.
     hit = _hit_level(hist, strike)
-    band = max(strike * 0.02, strike - hit + 11.0)
+    band = max(strike * 0.02, strike - hit + 6.0)
     # total analysed span, used to reject static bright elements (a persistent
     # hit-line glow / reflection reads as a note that never releases, §35).
     tmin = min((h.times[0] for h in hist.values() if h.times), default=0.0)
