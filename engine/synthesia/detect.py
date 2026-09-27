@@ -43,6 +43,7 @@ class LaneSampler:
     def __init__(self, geom: KeyboardGeometry, theme: ThemeModel,
                  column_frac: float = 1.0, min_run_px: int = 2,
                  min_fill: float = 0.35, center_fill: float = 0.72,
+                 side_fill: float = 0.4,
                  background: "np.ndarray | None" = None, motion_thr: int = 30,
                  motion_gate: bool = False, motion_alpha: float = 0.08):
         self.geom = geom
@@ -51,6 +52,7 @@ class LaneSampler:
         self.min_run_px = min_run_px
         self.min_fill = min_fill
         self.center_fill = center_fill
+        self.side_fill = side_fill
         self.roll_top = 0
         self.strike_y = int(round(geom.strike_y))
         # Rolling-background motion gate (§32, §33, §35): note bars scroll, so at
@@ -96,14 +98,25 @@ class LaneSampler:
             if moving is not None:
                 mask2d &= moving[:, x0:x1]
             # Two gates decide a note is present in this lane, not a neighbour's
-            # bleed: (a) the lane *centre* must be covered — a neighbouring
-            # note's core edge never reaches the centre (§7); (b) enough of the
+            # bleed: (a) the note core spans the lane *centre*; (b) enough of the
             # whole lane width is covered to reject single-pixel noise (§34).
+            # A neighbouring note's core edge only ever reaches ONE side of this
+            # lane, never both — so gate (a) is satisfied either by the exact
+            # centre being covered, OR by the core wrapping BOTH sides of centre.
+            # The latter is essential when a note-name label box is drawn over the
+            # middle of the bar: it punches a hole in the colour at the centre, so
+            # a pure centre test would drop the note even though its colour clearly
+            # surrounds the label (§7, §55).
             ci = int(round(lane.center)) - x0
             c0 = max(0, ci - 1); c1 = min(mask2d.shape[1], ci + 2)
             center = mask2d[:, c0:c1].mean(axis=1)
+            w = mask2d.shape[1]
+            left = mask2d[:, :max(1, ci)].mean(axis=1)
+            right = mask2d[:, min(w - 1, ci + 1):].mean(axis=1)
             fill = mask2d.mean(axis=1)
-            row_active = (center >= self.center_fill) & (fill >= self.min_fill)
+            centered = (center >= self.center_fill) | (
+                (left >= self.side_fill) & (right >= self.side_fill))
+            row_active = centered & (fill >= self.min_fill)
             # bridge thin gaps (seams, glow occlusion, compression) so a single
             # bar is not split; real repeated-note gaps are far larger (§12,§36)
             row_active = self._bridge(row_active, self.bridge_px)
