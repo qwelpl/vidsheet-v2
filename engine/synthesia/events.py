@@ -92,17 +92,8 @@ def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
     # to the measured hit level (where bars actually top out) instead of the
     # geometric strike line; on a clean render that level is the strike itself, so
     # the band is unchanged.
-    hit, trough = _hit_level(hist, strike)
-    band = max(6.0, strike * 0.02)
-    # Only when bars clearly top out SHORT of the strike (a hit-flash strip caps
-    # them) do we widen the band. The threshold is placed BETWEEN that hit level
-    # and the level the leading edge falls to between bars (trough): high enough
-    # that a receding/descending edge doesn't linger occupied (rapid repeats keep
-    # their gaps, no merge), low enough to catch bars that top out short. On a
-    # clean render bars reach the strike (hit≈strike), so the band stays tight.
-    if strike - hit > strike * 0.015:
-        thresh = hit - 0.45 * max(0.0, hit - trough)
-        band = max(band, strike - thresh)
+    hit = _hit_level(hist, strike)
+    band = max(strike * 0.02, strike - hit + 6.0)
     # total analysed span, used to reject static bright elements (a persistent
     # hit-line glow / reflection reads as a note that never releases, §35).
     tmin = min((h.times[0] for h in hist.values() if h.times), default=0.0)
@@ -370,15 +361,12 @@ def resolve_same_pitch_overlaps(notes: list[NoteEvent], drop_min: float = 0.022,
     return len(drop)
 
 
-def _hit_level(hist: dict, strike: float) -> tuple[float, float]:
-    """Estimate (hit, trough): the y a falling bar's leading edge tops out at, and
-    the y it falls back to between consecutive bars in a lane. ``hit`` is normally
-    the strike line but a hit-flash strip above the keys can cap it short; the
-    occupancy threshold is placed between the two so rapid repeats keep their gaps
-    while short-topping bars are still caught. Peaks/troughs are the local
-    maxima/minima of the per-lane leading edge in the lower roll."""
+def _hit_level(hist: dict, strike: float) -> float:
+    """The y a falling bar's leading edge actually tops out at. Normally the
+    strike line, but a hit-flash strip above the keys can cap it several pixels
+    short. Estimated as a high percentile of the per-bar leading-edge peaks (local
+    maxima in the lower roll), so onset occupancy can be anchored to it."""
     peaks: list[float] = []
-    troughs: list[float] = []
     lo = strike * 0.8
     for h in hist.values():
         runs = h.runs
@@ -388,18 +376,11 @@ def _hit_level(hist: dict, strike: float) -> tuple[float, float]:
         for k in range(1, len(b) - 1):
             if b[k] >= lo and b[k] >= b[k - 1] and b[k] >= b[k + 1]:
                 peaks.append(float(b[k]))
-                # the trough immediately after this peak (the reset toward the
-                # next bar), if the edge dips meaningfully
-                j = k + 1
-                while j < len(b) - 1 and b[j + 1] <= b[j]:
-                    j += 1
-                if b[j] < b[k] - 8:
-                    troughs.append(float(b[j]))
     if len(peaks) < 20:
-        return strike, strike
-    hit = float(np.percentile(peaks, 90))
-    trough = float(np.percentile(troughs, 50)) if len(troughs) >= 10 else hit
-    return hit, trough
+        return strike
+    # a high percentile pins to the true bar-peak level (the consistent apex where
+    # bars top out), robust to lower spurious peaks from hit-flash glow
+    return float(np.percentile(peaks, 90))
 
 
 def _med3(a: np.ndarray, k: int = 7) -> np.ndarray:
