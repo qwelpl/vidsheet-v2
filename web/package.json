@@ -9,6 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@vercel/blob": "^2.8.0",
+    "jose": "^6.2.12",
     "next": "16.3.6",
     "react": "19.2.8",
     "react-dom": "19.2.8",

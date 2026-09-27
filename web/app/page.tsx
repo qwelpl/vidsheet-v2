@@ -4,6 +4,7 @@ import { JobStatus, Project, getJob, getResult } from "@/lib/api";
 import Landing from "./components/Landing";
 import Progress from "./components/Progress";
 import Workspace from "./components/Workspace";
+import LogoutButton from "./components/LogoutButton";
 
 export default function Page() {
   const [job, setJob] = useState<JobStatus | null>(null);
@@ -47,8 +48,16 @@ export default function Page() {
     setProject(null);
   }
 
-  if (!job) return <Landing onJob={setJob} />;
-  if (job.status === "done" && project)
-    return <Workspace jobId={job.id} project={project} onExit={reset} />;
-  return <Progress job={job} onCancel={reset} />;
+  return (
+    <>
+      {!job ? (
+        <Landing onJob={setJob} />
+      ) : job.status === "done" && project ? (
+        <Workspace jobId={job.id} project={project} onExit={reset} />
+      ) : (
+        <Progress job={job} onCancel={reset} />
+      )}
+      <LogoutButton />
+    </>
+  );
 }
