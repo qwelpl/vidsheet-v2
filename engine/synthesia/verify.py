@@ -9,7 +9,7 @@ Two independent checks:
     false positives (§24).
   * ``search_errors`` scans the note list for the suspicious patterns listed in
     §48 (1-frame notes, near-duplicate re-attacks, octave jumps, unsupported
-    events...) and flags them for review — never deletes them.
+    events...) and flags them for review - never deletes them.
 
 Nothing here fabricates or "rounds up" accuracy; every number is measured
 (§25, §68).

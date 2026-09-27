@@ -1,5 +1,5 @@
 // Session token (signed JWT) helpers. jose-only so this is safe to import from
-// edge middleware — no Node/Blob dependencies here.
+// edge middleware - no Node/Blob dependencies here.
 import { SignJWT, jwtVerify } from "jose";
 
 export const SESSION_COOKIE = "vs_session";

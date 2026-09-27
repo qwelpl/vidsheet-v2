@@ -2,11 +2,11 @@
 
 Multi-pass, streaming, deterministic. Passes:
 
-  1. Geometry & theme  — median-frame keyboard detection + colour clustering.
-  2. Track             — stream every frame, sample lanes, link tracks.
-  3. Build notes       — tracks -> notes with sub-frame timing.
-  4. Musical analysis  — hands, tempo, quantization.
-  5. Verify            — visual comparison + automatic error search.
+  1. Geometry & theme - median-frame keyboard detection + colour clustering.
+  2. Track - stream every frame, sample lanes, link tracks.
+  3. Build notes - tracks -> notes with sub-frame timing.
+  4. Musical analysis - hands, tempo, quantization.
+  5. Verify - visual comparison + automatic error search.
 
 Progress is reported through a callback with real stage/among-frame counts
 (§42, never fake percentages).
@@ -236,7 +236,7 @@ def analyze(video_path: str, opts: Options,
 def _hitline_band_height(frames: list[np.ndarray], geom: kb.KeyboardGeometry,
                          theme: ThemeModel) -> int:
     """Height (px) of a persistent note-coloured band adjacent to the strike
-    line, active across many lanes over time — a hit-line glow/reflection rather
+    line, active across many lanes over time - a hit-line glow/reflection rather
     than real notes. Measured on the static-ish sample frames."""
     strike = int(geom.strike_y)
     look = min(strike, 40)

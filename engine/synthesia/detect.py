@@ -101,7 +101,7 @@ class LaneSampler:
             # bleed: (a) the note core spans the lane *centre*; (b) enough of the
             # whole lane width is covered to reject single-pixel noise (§34).
             # A neighbouring note's core edge only ever reaches ONE side of this
-            # lane, never both — so gate (a) is satisfied either by the exact
+            # lane, never both - so gate (a) is satisfied either by the exact
             # centre being covered, OR by the core wrapping BOTH sides of centre.
             # The latter is essential when a note-name label box is drawn over the
             # middle of the bar: it punches a hole in the colour at the centre, so

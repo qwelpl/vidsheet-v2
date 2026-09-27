@@ -7,7 +7,7 @@ interface Props {
   project: Project;
   notes: Note[];
   time: number;
-  transparent?: boolean;   // overlay mode — no background/keyboard
+  transparent?: boolean;   // overlay mode - no background/keyboard
   opacity?: number;
   selectedId?: number | null;
 }

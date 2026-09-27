@@ -54,7 +54,7 @@ export default function LoginPage() {
           <button className={mode === "login" ? "active" : ""} style={{ flex: 1 }}
             onClick={() => { setMode("login"); setError(null); }}>Log in</button>
           <button className={mode === "redeem" ? "active" : ""} style={{ flex: 1 }}
-            onClick={() => { setMode("redeem"); setError(null); }}>Redeem key</button>
+            onClick={() => { setMode("redeem"); setError(null); }}>Sign up</button>
         </div>
 
         <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -79,8 +79,8 @@ export default function LoginPage() {
 
         <div style={{ fontSize: 11.5, color: "var(--text-faint, #6b7280)", marginTop: 14, lineHeight: 1.5 }}>
           {mode === "login"
-            ? "First time here? Use “Redeem key” with the license key from the developer."
-            : "You only enter the key once — after that, log in with your username and password."}
+            ? "First time here? Use “Sign up” with the license key from the developer."
+            : "You only enter the key once - after that, log in with your username and password."}
         </div>
       </div>
     </div>

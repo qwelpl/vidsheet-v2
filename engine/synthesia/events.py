@@ -1,7 +1,7 @@
 """Per-lane note-event extraction (§9, §10, §11, §12, §53).
 
-Instead of tracking falling-bar *objects* through the strike line — which is
-fragile when a held note and an approaching repeat share a lane — we treat each
+Instead of tracking falling-bar *objects* through the strike line - which is
+fragile when a held note and an approaching repeat share a lane - we treat each
 pitch lane as an independent occupancy signal at the strike line:
 
     rising edge  (empty -> occupied) = note-on
@@ -87,7 +87,7 @@ def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
     strike = float(geom.strike_y)
     # Occupancy band. A hit-flash strip above the keys caps how far a bar's
     # coloured leading edge descends, so bars top out several pixels SHORT of the
-    # strike line — right at the band edge, where threshold noise drops roughly
+    # strike line - right at the band edge, where threshold noise drops roughly
     # half of them (rapid repeats then detect every other note). Anchor the band
     # to the measured hit level (where bars actually top out) instead of the
     # geometric strike line; on a clean render that level is the strike itself, so
@@ -143,7 +143,7 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
         while j + 1 < n and (occ[j + 1] or _is_flicker(frames, j, occ)):
             j += 1
         # then keep extending through a HELD (clamped, non-descending) edge in the
-        # wider hold zone — a note behind a hit-flash — but never past the next
+        # wider hold zone - a note behind a hit-flash - but never past the next
         # note's onset in this lane, so repeats stay distinct.
         cap = next_onset[onset_frame]
         while (j + 1 < cap and hold[j + 1]
@@ -212,7 +212,7 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
 
         dur = offset - onset
         # A short detection that never showed a genuine descent at the fall
-        # speed is not a note but an on-screen overlay — a comment box, emoji,
+        # speed is not a note but an on-screen overlay - a comment box, emoji,
         # text or watermark that briefly matched a note colour. Real short notes
         # still fall normally, so they keep a clean constant-velocity approach;
         # overlays do not. Drop these (§16, §36).
@@ -239,7 +239,7 @@ def cleanup_fragments(notes: list[NoteEvent], merge_gap: float = 0.045,
 
     Detection occasionally splits one note into a main note plus a sliver, or
     emits a near-duplicate at the same pitch. Here, per pitch, notes that overlap
-    — or sit a hair apart where one of them is very short — are merged into the
+     - or sit a hair apart where one of them is very short - are merged into the
     longer note; anything still shorter than ``drop_min`` is removed. Genuine
     fast repeats (both notes a real length, with a clean gap) are left intact."""
     by_pitch: dict[int, list[NoteEvent]] = {}
@@ -274,8 +274,8 @@ def cleanup_fragments(notes: list[NoteEvent], merge_gap: float = 0.045,
 def align_chords(notes: list[NoteEvent], onsets=None, window: float = 0.033) -> int:
     """Snap near-simultaneous onsets across lanes to one shared time (§10, §18).
 
-    Notes meant to be struck together — a chord, or the two hands landing on the
-    same beat — are detected on slightly different frames and drift a few
+    Notes meant to be struck together - a chord, or the two hands landing on the
+    same beat - are detected on slightly different frames and drift a few
     milliseconds apart, which reads as the hands being out of sync. Notes whose
     onsets fall inside a tight ``window`` are almost certainly one event (a real
     arpeggio/roll spreads wider than a frame), so they are moved to a common
@@ -337,7 +337,7 @@ def resolve_same_pitch_overlaps(notes: list[NoteEvent], drop_min: float = 0.022,
 
     One key cannot sound twice at once, so after sub-frame timing and chord
     alignment nudge onsets around, a note that now reaches past the next hit of
-    the same key has its release trimmed back to that hit — the repeats are kept
+    the same key has its release trimmed back to that hit - the repeats are kept
     distinct (unlike a merge). A note trimmed shorter than ``drop_min`` was a
     spurious duplicate and is dropped. Returns notes removed."""
     by_pitch: dict[int, list[NoteEvent]] = {}

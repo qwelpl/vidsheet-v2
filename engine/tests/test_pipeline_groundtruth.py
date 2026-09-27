@@ -135,7 +135,7 @@ def test_keylight_onset_accuracy_and_hand_sync():
 
 
 def test_musicxml_measures_are_time_complete():
-    # Every voice in every measure must sum to exactly one measure of divisions —
+    # Every voice in every measure must sum to exactly one measure of divisions - 
     # overlapping/held notes flattened to a single voice must not overflow or
     # push later onsets off their beat (the "timing really off" regression).
     import xml.etree.ElementTree as ET

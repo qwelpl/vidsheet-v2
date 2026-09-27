@@ -3,7 +3,7 @@
 Primary signal is the Synthesia note colour: each colour cluster is mapped to a
 hand by the average pitch of the notes wearing it (the lower-centroid colour is
 the left hand). When colour does not separate the hands (single-colour or
-rainbow themes) a voice split is inferred from pitch context — but never with
+rainbow themes) a voice split is inferred from pitch context - but never with
 the naive "low pitch = left" rule, because hand crossings occur; such notes get
 a low ``hand_confidence`` so they surface for review.
 """

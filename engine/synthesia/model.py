@@ -3,7 +3,7 @@
 Every note in the reconstruction carries its full provenance: which frames it
 was seen in, how it was tracked, and separate confidence values for pitch,
 timing, duration and hand. Raw (unquantized) performance timing is *never*
-discarded — quantization is a derived, separate representation.
+discarded - quantization is a derived, separate representation.
 """
 from __future__ import annotations
 

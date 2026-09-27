@@ -66,7 +66,7 @@ def detect_theme(
     ``frames_hsv_roll`` are HSV crops of the falling-note region across time.
     """
     # Sample note colours with a LOW saturation floor. Note bars are not always
-    # vividly saturated — some visualisers use pale/pastel colours (e.g. a gold
+    # vividly saturated - some visualisers use pale/pastel colours (e.g. a gold
     # left hand at saturation ~50) that a fixed sat_min=70 rejects outright,
     # collapsing that hand's notes to just the solid label. The dark background
     # sits near zero saturation, so a low floor still separates it, and the
@@ -104,7 +104,7 @@ def detect_theme(
     # saturated, suppressing desaturated fringe, §8) AND normalise each frame's
     # contribution before summing, so a hue is scored by how CONSISTENTLY it
     # appears across frames rather than by raw pixel count. This stops a few
-    # outlier frames — an intro/transition/logo in another colour — from
+    # outlier frames - an intro/transition/logo in another colour - from
     # dominating the total and burying a genuine hand colour that is present
     # throughout the performance.
     hist = np.zeros(180, dtype=np.float64)
@@ -154,7 +154,7 @@ def detect_theme(
 
 
 def _otsu(x: np.ndarray) -> int:
-    """Generic Otsu split (0..255) — the value maximising between-class variance,
+    """Generic Otsu split (0..255) - the value maximising between-class variance,
     i.e. the valley between two populations (here: background vs note saturation)."""
     if x.size < 50:
         return 40

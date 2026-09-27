@@ -161,7 +161,7 @@ function ReportPanel({ project }: { project: Project }) {
         {stat("Possible missing", r.possible_missing)}
         {stat("Possible duplicates", r.possible_duplicates)}
         {stat("Onset uncertainty", `±${r.mean_onset_uncertainty_ms.toFixed(2)} ms`)}
-        {stat("Keyboard", `${project.geometry.low_name}–${project.geometry.high_name}`)}
+        {stat("Keyboard", `${project.geometry.low_name}-${project.geometry.high_name}`)}
         {stat("Tempo", `${project.tempo.bpm.toFixed(1)} BPM`)}
       </div>
       <div style={{ fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>{r.notes}</div>
@@ -172,8 +172,8 @@ function ReportPanel({ project }: { project: Project }) {
           {stat("Precision", gt.precision.toFixed(3), "#35b36b")}
           {stat("Recall", gt.recall.toFixed(3), "#35b36b")}
           {stat("F1", gt.f1.toFixed(3), "#35b36b")}
-          {stat("Onset error", gt.mean_onset_error_ms != null ? `${gt.mean_onset_error_ms} ms` : "—")}
-          {stat("Duration error", gt.mean_duration_error_ms != null ? `${gt.mean_duration_error_ms} ms` : "—")}
+          {stat("Onset error", gt.mean_onset_error_ms != null ? `${gt.mean_onset_error_ms} ms` : " - ")}
+          {stat("Duration error", gt.mean_duration_error_ms != null ? `${gt.mean_duration_error_ms} ms` : " - ")}
           {stat("False positive / negative", `${gt.false_positive} / ${gt.false_negative}`)}
         </div>
       )}

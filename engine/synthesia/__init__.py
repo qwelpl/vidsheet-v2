@@ -1,4 +1,4 @@
-"""Synthesia reconstruction engine — a reverse compiler for piano-roll videos.
+"""Synthesia reconstruction engine - a reverse compiler for piano-roll videos.
 
 The video is treated as ground truth; the engine recovers the underlying
 performance (notes, timing, hands, dynamics) with frame-level accuracy using

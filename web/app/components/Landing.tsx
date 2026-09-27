@@ -119,7 +119,7 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
         </div>
 
         <div style={{ marginTop: 14, color: "var(--text-faint)", fontSize: 11, lineHeight: 1.6 }}>
-          The demo renders a synthetic clip from a known score, then reconstructs it —
+          The demo renders a synthetic clip from a known score, then reconstructs it - 
           so its accuracy is verified against ground truth, not estimated.
         </div>
       </div>
