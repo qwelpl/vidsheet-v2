@@ -37,11 +37,6 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
             Synthesia reconstruction engine
           </span>
         </div>
-        <p style={{ color: "var(--text-dim)", marginTop: 0, marginBottom: 22, fontSize: 13, lineHeight: 1.5 }}>
-          Reverse-compile a piano-roll video into an exact performance. Visual note
-          detection is the source of truth; every reconstructed note carries its own
-          evidence and confidence.
-        </p>
 
         <div className="panel" style={{ borderRadius: 10, padding: 18 }}>
           <div className="label" style={{ marginBottom: 8 }}>YouTube or direct video URL</div>
@@ -116,11 +111,6 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
               {err}
             </div>
           )}
-        </div>
-
-        <div style={{ marginTop: 14, color: "var(--text-faint)", fontSize: 11, lineHeight: 1.6 }}>
-          The demo renders a synthetic clip from a known score, then reconstructs it - 
-          so its accuracy is verified against ground truth, not estimated.
         </div>
       </div>
     </div>
