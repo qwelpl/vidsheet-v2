@@ -68,7 +68,7 @@ export default function Progress({ job, onCancel }: { job: JobStatus; onCancel: 
         <div style={{ marginTop: 12, maxHeight: 120, overflow: "auto" }} className="mono">
           {job.stages.slice(-8).map((s, i) => (
             <div key={i} style={{ fontSize: 11, color: "var(--text-faint)", padding: "1px 0" }}>
-              {s.stage} — {s.message}
+              {s.stage} - {s.message}
             </div>
           ))}
         </div>

@@ -1,13 +1,13 @@
 """Key-highlight note detection (§55, primary path for notes-over-video).
 
 Many visualisers light up each key on the keyboard while it is held. The
-keyboard is a *static* region at a fixed location, so — unlike the falling bars
-that get composited over moving footage — the lit-key signal is clean even when
+keyboard is a *static* region at a fixed location, so - unlike the falling bars
+that get composited over moving footage - the lit-key signal is clean even when
 the roll is drawn over full-motion video. This detector reads which keys are
 pressed each frame directly:
 
     key lit   -> note on   (exact pitch from geometry)
-    key unlit -> note off  (true held duration — the key-release, §11/§17)
+    key unlit -> note off  (true held duration - the key-release, §11/§17)
 
 Attack times are refined against the audio onsets (§18); a lit run that spans
 several audio attacks is a repeated note and is split accordingly (§12).
@@ -57,7 +57,7 @@ class KeyLightSampler:
     def sample_raw(self, bgr: np.ndarray) -> dict[int, tuple[int, float]]:
         """Return {midi: (best_cluster, fill_fraction)} for EVERY key, including
         sub-threshold coverage. Keeping the raw fraction (share of the key body
-        matching the note colour) — not just a lit/unlit flag — is what lets us
+        matching the note colour) - not just a lit/unlit flag - is what lets us
         (a) separate a fast repeat that only *dims* between hits without clearing
         ``fill_thr`` (§12), and (b) place the attack sub-frame by interpolating
         where coverage crosses the lit threshold as the key lights up (§10, §18)."""
@@ -152,7 +152,7 @@ def _subframe_onset(fill, times, i, thr) -> float:
 
 def _subframe_offset(fill, times, last_lit, n, thr) -> float:
     """Release instant: interpolate where coverage falls back through ``thr``
-    between the last lit frame and the first dark one — avoids the full-frame
+    between the last lit frame and the first dark one - avoids the full-frame
     overhang of snapping the release to ``times[last_lit+1]``."""
     if last_lit + 1 >= n:
         dt = (times[last_lit] - times[last_lit - 1]) if last_lit > 0 else 0.0

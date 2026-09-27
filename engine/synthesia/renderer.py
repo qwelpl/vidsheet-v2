@@ -64,7 +64,7 @@ def _draw_keyboard(img, geom: KeyboardGeometry):
 
 def predicted_presence(notes: list[NoteEvent], geom: KeyboardGeometry, v: float,
                        t: float) -> dict[int, tuple[float, float]]:
-    """Which lanes have a bar at time ``t`` and where — used by verification."""
+    """Which lanes have a bar at time ``t`` and where - used by verification."""
     out: dict[int, tuple[float, float]] = {}
     for n in notes:
         span = note_bar_at(n, geom, v, t)

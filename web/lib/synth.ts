@@ -1,6 +1,6 @@
 // Piano playback for auditioning the reconstruction (§46).
 //
-// Primary: a real *sampled* grand (smplr's SplendidGrandPiano — recorded
+// Primary: a real *sampled* grand (smplr's SplendidGrandPiano - recorded
 // multi-velocity samples), so it actually sounds like a piano. The samples load
 // from a CDN on first use; until they are ready (or if offline) a self-contained
 // synthesised voice is used so playback always works.

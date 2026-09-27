@@ -69,7 +69,7 @@ export default function Workspace({ jobId, project, onExit }: { jobId: string; p
   useEffect(() => { audioRef.current = audioMode; }, [audioMode]);
   useEffect(() => { speedRef.current = speed; }, [speed]);
 
-  // playback clock — also schedules reconstruction synth voices in sync (§46)
+  // playback clock - also schedules reconstruction synth voices in sync (§46)
   useEffect(() => {
     if (!synth.current) synth.current = new PianoSynth();
     let raf = 0;
@@ -180,7 +180,7 @@ export default function Workspace({ jobId, project, onExit }: { jobId: string; p
         <div style={{ fontWeight: 600 }}>{project.meta.title || "Reconstruction"}</div>
         <span className="chip">{project.meta.width}×{project.meta.height}</span>
         <span className="chip">{fps.toFixed(project.meta.variable_fps ? 2 : 0)} fps</span>
-        <span className="chip">{project.geometry.low_name}–{project.geometry.high_name}</span>
+        <span className="chip">{project.geometry.low_name}-{project.geometry.high_name}</span>
         <span className="chip">{notes.length} notes</span>
         {uncertainCount > 0 && <span className="chip" style={{ color: "#e0a52a" }}>{uncertainCount} to review</span>}
         {project.ground_truth && (

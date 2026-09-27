@@ -2,7 +2,7 @@
 
 MIDI uses high PPQ so precise sub-frame timing survives (§22). Hands map to
 separate channels; sustain-pedal events export as CC64 (§17). Raw note metadata
-and confidences are preserved in the JSON export (§40, §58) — nothing is thrown
+and confidences are preserved in the JSON export (§40, §58) - nothing is thrown
 away after producing the MIDI.
 """
 from __future__ import annotations
@@ -84,7 +84,7 @@ def notes_to_json(notes: list[NoteEvent]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# MusicXML (§21) — partwise grand staff, quantized to the beat grid
+# MusicXML (§21) - partwise grand staff, quantized to the beat grid
 # ---------------------------------------------------------------------------
 
 def write_musicxml(path: str, notes: list[NoteEvent], tempo: TempoAnalysis) -> None:

@@ -164,7 +164,7 @@ def generate_video(path: str, notes: list[SynthNote], cfg: SynthConfig,
 
 def demo_piece() -> list[SynthNote]:
     """A short two-hand excerpt exercising chords, repeats, a fast run and a
-    sustained note — a compact stress test for the pipeline."""
+    sustained note - a compact stress test for the pipeline."""
     N = []
     # left-hand chord progression (root-position triads); a lead-in lets every
     # note's approach to the strike line be observed.

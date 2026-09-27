@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Reprise — Synthesia Reconstruction",
+  title: "Reprise - Synthesia Reconstruction",
   description:
     "Forensic reconstruction of piano performances from Synthesia-style videos.",
 };

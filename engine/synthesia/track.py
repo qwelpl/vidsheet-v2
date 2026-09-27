@@ -3,7 +3,7 @@
 Runs from :mod:`detect` are linked across frames into persistent falling-bar
 tracks. Each track's leading-edge trajectory is fit to a line so the exact
 strike time is recovered *between* video frames (temporal super-resolution,
-§53) — timing precision far better than one frame. Duration comes from the bar
+§53) - timing precision far better than one frame. Duration comes from the bar
 length divided by fall speed (§11); repeated notes stay distinct because they
 arrive as separate tracks with a visible gap (§12).
 """
@@ -160,7 +160,7 @@ def build_notes(tracks: list[Track], geom: KeyboardGeometry, fps: float,
     frame_dt = 1.0 / fps
     for tr in tracks:
         if len(tr.samples) < min_track_frames:
-            # 1-frame artefact — keep only if it clearly straddled the line,
+            # 1-frame artefact - keep only if it clearly straddled the line,
             # otherwise drop as flicker (§35). We drop; a real note persists.
             continue
         v = _fit_velocity(tr, v_global)

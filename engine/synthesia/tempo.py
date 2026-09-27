@@ -88,7 +88,7 @@ _DIVISIONS = [4, 2, 1, 0.5, 1/3, 0.25, 1/6, 0.125]
 
 def quantize(notes: list[NoteEvent], tempo: TempoAnalysis,
              strength: float = 1.0) -> list[dict]:
-    """Return a quantized *copy* (list of dicts) — raw notes stay untouched
+    """Return a quantized *copy* (list of dicts) - raw notes stay untouched
     (§20). Each entry records the snapped start/end in beats and the ms error."""
     period = tempo.beat_period
     phase = tempo.beat_phase

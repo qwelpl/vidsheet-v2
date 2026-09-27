@@ -115,7 +115,7 @@ class KeyboardGeometry:
 
 def temporal_median(frames: list[np.ndarray]) -> np.ndarray:
     """Median across sampled frames. Moving falling notes average away while the
-    static keyboard stays sharp — the ideal image to measure geometry from."""
+    static keyboard stays sharp - the ideal image to measure geometry from."""
     stack = np.stack(frames, axis=0)
     return np.median(stack, axis=0).astype(np.uint8)
 
@@ -132,7 +132,7 @@ def detect_keyboard_band(gray: np.ndarray) -> tuple[int, int]:
     # White keys stay bright all the way up to the strike line even where black
     # keys sit between them. A ROW MEAN, however, is dragged down through the
     # black-key band (dark blacks interleaved with the white gaps) and stops the
-    # upward walk short — capturing only the white aprons below the black keys and
+    # upward walk short - capturing only the white aprons below the black keys and
     # wrecking pitch detection. A high per-row percentile follows the white-key
     # columns instead, so the band spans the full keyboard including black keys.
     brightness = np.percentile(gray, 80, axis=1).astype(np.float64)
