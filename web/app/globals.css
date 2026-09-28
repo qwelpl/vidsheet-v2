@@ -79,3 +79,36 @@ html, body {
 
 .fade-in { animation: fade .25s ease; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* --- landing wordmark + entrance animations --- */
+.vs-wordmark {
+  background: linear-gradient(90deg, #4c8bf5, #38c172, #4c8bf5);
+  background-size: 220% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+  animation: vs-shimmer 6s linear infinite;
+}
+@keyframes vs-shimmer { to { background-position: 220% 0; } }
+
+.vs-rise { animation: vs-rise .5s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes vs-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+.vs-glow-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent-2); box-shadow: 0 0 10px 2px rgba(56,193,114,.7);
+  animation: vs-pulse 1.8s ease-in-out infinite;
+}
+@keyframes vs-pulse { 0%,100% { opacity: .5; transform: scale(.85); } 50% { opacity: 1; transform: scale(1.15); } }
+
+.vs-panel {
+  position: relative;
+  box-shadow: 0 20px 60px -20px rgba(0,0,0,.7), 0 0 0 1px var(--border);
+  backdrop-filter: blur(3px);
+}
+.vs-panel::before {
+  content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px;
+  background: linear-gradient(120deg, rgba(76,139,245,.5), transparent 40%, transparent 60%, rgba(56,193,114,.5));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  opacity: .6; pointer-events: none;
+}

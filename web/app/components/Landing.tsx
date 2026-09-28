@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
 import { startYoutube, startUpload, startDemo, JobStatus } from "@/lib/api";
+import NoteRain from "./NoteRain";
 
 const PRESETS = [
   { id: "fast", label: "Fast", desc: "Downscaled, quick preview" },
@@ -27,18 +28,20 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
   }
 
   return (
-    <div className="fade-in" style={{ height: "100vh", display: "grid", placeItems: "center" }}>
-      <div style={{ width: 620, maxWidth: "92vw" }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 4 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em", margin: 0 }}>
-            Reprise
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", position: "relative", overflow: "hidden" }}>
+      <NoteRain />
+      <div className="vs-rise" style={{ width: 620, maxWidth: "92vw", position: "relative", zIndex: 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 10 }}>
+          <span className="vs-glow-dot" />
+          <h1 className="vs-wordmark" style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-0.03em", margin: 0 }}>
+            Vidsheet
           </h1>
-          <span style={{ color: "var(--text-faint)", fontSize: 12 }}>
-            Synthesia reconstruction engine
+          <span style={{ color: "var(--text-faint)", fontSize: 12, alignSelf: "flex-end", paddingBottom: 6 }}>
+            piano video to sheet music
           </span>
         </div>
 
-        <div className="panel" style={{ borderRadius: 10, padding: 18 }}>
+        <div className="panel vs-panel" style={{ borderRadius: 12, padding: 20 }}>
           <div className="label" style={{ marginBottom: 8 }}>YouTube or direct video URL</div>
           <div style={{ display: "flex", gap: 8 }}>
             <input
