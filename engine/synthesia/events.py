@@ -127,6 +127,17 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
     bottom_s = _med3(bottom)
     hold = bottom >= (strike - max(band, strike * 0.09))
     onset_frames = [k for k in range(n) if occ[k] and (k == 0 or not occ[k - 1])]
+    # Fast same-key repeats keep the lane continuously occupied - each new bar
+    # reaches the hit line before the previous one has cleared it - so occupancy
+    # never breaks and the (median-smoothed) hold test reads one long note. But
+    # the raw leading edge briefly RECEDES from the hit line at every re-attack: a
+    # small notch that then returns to the line. Treat each such notch as a fresh
+    # onset so rapid repeats stay distinct (§12). A genuinely sustained note holds
+    # its edge flat at the line and produces no notch, so it is never split.
+    hit_line = strike - band + 6.0
+    restrikes = _restrike_onsets(bottom, occ, hit_line)
+    if restrikes:
+        onset_frames = sorted(set(onset_frames) | restrikes)
     next_onset = _next_onset_after(onset_frames, n)
 
     notes: list[NoteEvent] = []
@@ -137,15 +148,22 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
             continue
         # onset at entry i (rising edge, allowing i==0)
         onset_frame = i
+        # a re-strike onset sits inside a continuously-occupied span: the previous
+        # bar is still clearing the strike zone, so its approach is not cleanly
+        # visible. Such notes are anchored at the notch and exempt from the
+        # approach-based rejections below (they are known real re-attacks).
+        is_rs = onset_frame in restrikes
+        # never extend past the next onset in this lane (a real occupancy gap OR a
+        # re-strike notch), so repeats stay distinct.
+        cap = next_onset[onset_frame]
         # extend the played span while it stays occupied, tolerating tiny
         # frame gaps (compression flicker), but a real repeat gap ends it.
         j = i
-        while j + 1 < n and (occ[j + 1] or _is_flicker(frames, j, occ)):
+        while j + 1 < cap and (occ[j + 1] or _is_flicker(frames, j, occ)):
             j += 1
         # then keep extending through a HELD (clamped, non-descending) edge in the
         # wider hold zone - a note behind a hit-flash - but never past the next
-        # note's onset in this lane, so repeats stay distinct.
-        cap = next_onset[onset_frame]
+        # note's onset in this lane.
         while (j + 1 < cap and hold[j + 1]
                and bottom_s[j + 1] <= bottom_s[j] + 3):   # not a fresh descent
             j += 1
@@ -166,19 +184,26 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
         no_release = "offset_extrapolated" in off_flags
 
         # static element (glow / UI / composited footage): no falling approach
-        # AND no clean release -> not a note (§35, §51).
-        if no_approach and no_release:
+        # AND no clean release -> not a note (§35, §51). Re-strikes are exempt:
+        # their approach is masked by the preceding bar, not absent.
+        if no_approach and no_release and not is_rs:
             i = j + 1
             continue
         # approach is the ONLY evidence but the bar does not descend at the fall
         # speed -> a drifting anime region, not a note. Reject. When a clean
         # release also exists we keep it (a real note whose approach was noisy
         # over the moving footage).
-        if not no_approach and not vel_ok and no_release:
+        if not no_approach and not vel_ok and no_release and not is_rs:
             i = j + 1
             continue
 
-        if no_approach:
+        if is_rs and (no_approach or not vel_ok):
+            # anchor the re-attack at the notch return (the strike instant)
+            onset = h.times[onset_frame]
+            on_conf = 0.55
+            on_flags = ["restrike"]
+            no_approach = True
+        elif no_approach:
             onset = offset_r - 0.05 if offset_r else h.times[onset_frame]
             on_conf = 0.4
             on_flags = ["onset_extrapolated"]
@@ -210,18 +235,27 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
                 offset = vanish
                 dconf = min(dconf, 0.8)
 
+        # A note cannot extend past the next onset of the same key: for fast
+        # repeats the approach trajectory measures the whole stacked-bar train as
+        # one long bar, inflating the duration so consecutive repeats overlap (and
+        # then get fused downstream). Clamp the release to just before the next
+        # onset in this lane so repeats stay separate with correct lengths (§12).
+        if cap < n:
+            offset = min(offset, h.times[cap] - 1e-3)
         dur = offset - onset
         # A short detection that never showed a genuine descent at the fall
         # speed is not a note but an on-screen overlay - a comment box, emoji,
         # text or watermark that briefly matched a note colour. Real short notes
         # still fall normally, so they keep a clean constant-velocity approach;
         # overlays do not. Drop these (§16, §36).
-        if dur < 0.09 and (no_approach or not vel_ok):
+        if dur < 0.09 and (no_approach or not vel_ok) and not is_rs:
             i = j + 1
             continue
 
         note = _make_note(midi, h, onset_frame, offset_frame, onset, offset,
                           geom, on_conf, dconf, on_flags + (off_flags if offset <= onset + 1e-4 else []))
+        if is_rs:
+            note.flag("restrike")   # a same-key re-attack; keep it distinct downstream
         if top_clamped:
             note.flag("duration_unbounded_top")  # bar entered before fully visible (§37)
             note.duration_confidence = min(note.duration_confidence, 0.45)
@@ -252,9 +286,14 @@ def cleanup_fragments(notes: list[NoteEvent], merge_gap: float = 0.045,
         for n in group:
             if merged:
                 p = merged[-1]
-                overlap = n.start < p.end
+                # a re-strike is a real re-attack, not a detection sliver/dupe -
+                # never fuse it away, so the fastest repeats stay distinct; a small
+                # onset overlap from trajectory refinement is trimmed later by
+                # resolve_same_pitch_overlaps (§12).
+                is_repeat = "restrike" in n.issues or "restrike" in p.issues
+                overlap = n.start < p.end and not is_repeat
                 sliver = (n.start - p.end < merge_gap) and \
-                    (min(n.duration, p.duration) < 0.05)
+                    (min(n.duration, p.duration) < 0.05) and not is_repeat
                 if overlap or sliver:
                     if n.end > p.end:
                         p.end = n.end
@@ -407,6 +446,36 @@ def _next_onset_after(onset_frames: list[int], n: int) -> np.ndarray:
         k = bisect.bisect_right(of, f)
         nxt[f] = of[k] if k < len(of) else n
     return nxt
+
+
+def _restrike_onsets(bottom: np.ndarray, occ: np.ndarray, hit_line: float,
+                     dip: float = 3.0) -> set:
+    """Frames where the leading edge, resting at the hit line, notches away and
+    returns - a same-key re-attack inside a continuously-occupied span (§12).
+
+    A repeated staccato note tops out at the hit line, vanishes, and the next bar
+    arrives a frame or two later; the edge dips a few pixels off the line in the
+    gap, then snaps back. Each return is reported as a new onset. A sustained note
+    keeps its edge pinned to the line (no dip), so nothing is reported. ``dip`` is
+    kept a few pixels above the compression/anti-alias jitter of a steady edge so
+    genuine holds are never split."""
+    n = len(bottom)
+    out: set = set()
+    k = 1
+    while k < n - 1:
+        # local minimum of the edge, sitting clearly below the hit line
+        if (occ[k] and bottom[k] <= hit_line - dip
+                and bottom[k] < bottom[k - 1] and bottom[k] <= bottom[k + 1]):
+            pre = float(bottom[max(0, k - 5):k].max())     # edge was at the line
+            r = k + 1
+            while r < n and bottom[r] < hit_line - 2:       # walk to the return
+                r += 1
+            if pre >= hit_line - 2 and r < n and occ[r]:
+                out.add(r)
+                k = r
+                continue
+        k += 1
+    return out
 
 
 def _is_flicker(frames, j, occ) -> bool:
