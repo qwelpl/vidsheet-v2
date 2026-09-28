@@ -99,7 +99,20 @@ def detect_theme(
     # Glow sits well below the bright-core level, so a threshold at half the
     # core brightness keeps cores and rejects glow (§34).
     core_level = float(np.percentile(V, 92))
-    val_min = int(np.clip(max(val_min, 0.55 * core_level), 90, 210))
+    base = max(float(val_min), 0.55 * core_level)
+    # Some themes render two brightness tiers of note (e.g. a bright and a dark
+    # shade of the same hand colour); the dark tier can sit at value ~95 while the
+    # bright tier is ~200, so a threshold anchored to the bright cores would drop
+    # the whole dark tier as if it were glow. Glow, however, is DESATURATED as it
+    # blends toward the background, whereas both note tiers stay strongly
+    # saturated. So never threshold above the dimmest strongly-saturated pixels
+    # (true cores): this admits a dark note tier while the sat gate still rejects
+    # glow. Only ever lowers the threshold, so bright-only themes are unchanged.
+    strong = S >= max(cap_sat_min, 120)
+    if int(strong.sum()) >= 200:
+        core_lo = float(np.percentile(V[strong], 12))
+        base = min(base, core_lo - 12.0)
+    val_min = int(np.clip(max(70.0, base), 55, 210))
     # Weight the hue histogram by saturation (real note colours are strongly
     # saturated, suppressing desaturated fringe, §8) AND normalise each frame's
     # contribution before summing, so a hue is scored by how CONSISTENTLY it
