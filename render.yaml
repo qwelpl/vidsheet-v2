@@ -4,6 +4,6 @@ services:
     runtime: docker
     rootDir: engine
     dockerfilePath: ./Dockerfile
-    plan: free
+    plan: standard  # always on, 2 GB RAM (analysis peaks >512 MB)
     numInstances: 1
     healthCheckPath: /api/health
