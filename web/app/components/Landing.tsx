@@ -63,7 +63,9 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
             background: "var(--panel-2)", border: "1px solid var(--border-soft)",
             borderRadius: 7, padding: "8px 11px" }}>
             Only <strong style={{ color: "var(--text)" }}>Synthesia-style</strong> piano-roll videos
-            (falling colored note bars over a keyboard) are supported.
+            (falling colored note bars over a keyboard) are supported. Hands are split by bar color,
+            so the left and right hands must use <strong style={{ color: "var(--text)" }}>different
+            colors</strong>. If both hands share one color, every note lands on a single staff.
           </div>
           <div className="label" style={{ marginBottom: 8 }}>YouTube or direct video URL</div>
           <div style={{ display: "flex", gap: 8 }}>
