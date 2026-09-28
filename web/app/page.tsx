@@ -57,7 +57,8 @@ export default function Page() {
       ) : (
         <Progress job={job} onCancel={reset} />
       )}
-      <AccountMenu />
+      {/* only on landing; would overlap the workspace export controls */}
+      {!job && <AccountMenu />}
     </>
   );
 }
