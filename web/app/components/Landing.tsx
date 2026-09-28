@@ -53,12 +53,11 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
         </div>
 
         <div className="panel vs-panel" style={{ borderRadius: 12, padding: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 12,
-            fontSize: 12, color: "var(--text-dim)", background: "var(--panel-2)",
-            border: "1px solid var(--border-soft)", borderRadius: 7, padding: "8px 11px" }}>
-            <span>🎹</span>
-            <span>Only <strong style={{ color: "var(--text)" }}>Synthesia-style</strong> piano-roll videos
-              (falling colored note bars over a keyboard) are supported.</span>
+          <div style={{ marginBottom: 12, fontSize: 12, color: "var(--text-dim)",
+            background: "var(--panel-2)", border: "1px solid var(--border-soft)",
+            borderRadius: 7, padding: "8px 11px" }}>
+            Only <strong style={{ color: "var(--text)" }}>Synthesia-style</strong> piano-roll videos
+            (falling colored note bars over a keyboard) are supported.
           </div>
           <div className="label" style={{ marginBottom: 8 }}>YouTube or direct video URL</div>
           <div style={{ display: "flex", gap: 8 }}>
