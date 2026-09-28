@@ -44,7 +44,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 function Row({ label, ...rest }: { label: string } & React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
-      <span className="label">{label}</span>
+      <span style={{ fontSize: 12, letterSpacing: ".02em", color: "var(--text-faint)" }}>{label}</span>
       <input {...rest} spellCheck={false}
         style={{ background: "#0b0c10", border: "1px solid var(--border, #23262d)",
           borderRadius: 7, padding: "9px 11px", color: "inherit", fontSize: 14, outline: "none" }} />
