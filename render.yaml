@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: reprise-engine
+    runtime: docker
+    rootDir: engine
+    dockerfilePath: ./Dockerfile
+    plan: free
+    numInstances: 1
+    healthCheckPath: /api/health
