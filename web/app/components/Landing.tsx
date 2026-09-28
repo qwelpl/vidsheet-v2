@@ -29,6 +29,12 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
     const fn = pending;
     setPending(null);
     if (!fn) return;
+    await run(fn);
+  }
+
+  // Run a queue action directly (no rights dialog). Used by the demo, whose
+  // content we own.
+  async function run(fn: () => Promise<JobStatus>) {
     setBusy(true);
     setErr(null);
     try {
@@ -87,7 +93,7 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
             <button className="btn" disabled={busy} onClick={() => fileRef.current?.click()} style={{ flex: 1, justifyContent: "center" }}>
               Upload video (MP4 / MOV / WebM / MKV)
             </button>
-            <button className="btn" disabled={busy} onClick={() => requestQueue(() => startDemo("maximum"))}>
+            <button className="btn" disabled={busy} onClick={() => run(() => startDemo("maximum"))}>
               Run demo
             </button>
             <input
