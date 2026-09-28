@@ -50,8 +50,7 @@ export default function ConfirmDialog({
         </label>
 
         <div style={{ fontSize: 11, color: "var(--text-faint)", lineHeight: 1.55, margin: "12px 2px 0" }}>
-          Source videos are deleted after processing. Outputs are private to your account.
-          By continuing you agree to the{" "}
+          Compliance with copyright is your responsibility. By continuing you agree to the{" "}
           <a href="/terms" target="_blank" rel="noopener noreferrer"
             style={{ color: "var(--accent)" }}>Terms of Service</a>.
         </div>

@@ -2,10 +2,6 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = { title: "Terms of Service - Vidsheet" };
 
-// NOTE for the operator: replace CONTACT_EMAIL with a real address you monitor
-// for copyright / takedown notices.
-const CONTACT_EMAIL = "abuse@vidsheet.app";
-
 export default function TermsPage() {
   return (
     <div style={{ minHeight: "100vh", background: "var(--bg, #0a0b0e)", color: "var(--text, #e6e8ee)" }}>
@@ -26,46 +22,28 @@ export default function TermsPage() {
         </Section>
 
         <Section title="2. Prohibited use">
-          Do not upload or process copyrighted material you are not authorized to use. Do not use
-          Vidsheet to infringe intellectual-property rights or to violate any law. We may refuse or
-          remove any submission and suspend accounts that violate these terms.
+          Do not upload or process copyrighted material you are not authorized to use, and do not
+          use Vidsheet to infringe intellectual-property rights or to violate any law. Compliance is
+          entirely your responsibility.
         </Section>
 
-        <Section title="3. Source videos and outputs">
-          Source videos are deleted after processing and are not retained or published. Reconstructed
-          outputs (sheet music, MIDI, and related files) are private to your account by default and
-          are not added to any public library.
+        <Section title="3. Copyright and licensing">
+          Any copyright claim arising from content you submit is your responsibility to resolve.
+          Obtaining any licenses required to submit a video or to use the output is your
+          responsibility. Vidsheet is a transcription tool, not a music-licensing service.
         </Section>
 
-        <Section title="4. Copyright and takedown">
-          If you believe content processed through Vidsheet infringes your copyright, send a notice
-          to <a href={`mailto:${CONTACT_EMAIL}`} style={{ color: "var(--accent)" }}>{CONTACT_EMAIL}</a> that
-          identifies the work, the material at issue, your contact information, and a good-faith
-          statement of infringement. We will review and remove infringing material where
-          appropriate.
-        </Section>
-
-        <Section title="5. Repeat infringers">
-          Accounts that repeatedly submit infringing content, or that are the subject of repeated
-          valid takedown notices, will have their access terminated.
-        </Section>
-
-        <Section title="6. No warranty; limitation of liability">
+        <Section title="4. No warranty; limitation of liability">
           The service is provided &ldquo;as is,&rdquo; without warranties of any kind. Transcription
           accuracy is not guaranteed. To the maximum extent permitted by law, Vidsheet and its
           operator are not liable for any damages arising from your use of the service or the
           output, including any claims related to content you submit.
         </Section>
 
-        <Section title="7. Changes">
+        <Section title="5. Changes">
           These terms may be updated from time to time. Continued use of the service after a change
           constitutes acceptance of the updated terms.
         </Section>
-
-        <p style={{ color: "var(--text-faint)", fontSize: 12, marginTop: 32 }}>
-          Vidsheet is a transcription tool, not a music-licensing service. Obtaining any licenses
-          required to use the output is your responsibility.
-        </p>
       </div>
     </div>
   );
