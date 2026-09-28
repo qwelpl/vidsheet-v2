@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import NoteRain from "../components/NoteRain";
 
 type Mode = "login" | "redeem";
 
@@ -41,11 +42,12 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center",
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", position: "relative", overflow: "hidden",
       background: "var(--bg, #0a0b0e)", color: "var(--text, #e6e8ee)", padding: 20 }}>
-      <div className="panel" style={{ width: 360, maxWidth: "100%", borderRadius: 12,
-        padding: 24, boxShadow: "0 10px 40px #000a" }}>
-        <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 2 }}>Reprise</div>
+      <NoteRain />
+      <div className="panel vs-panel vs-rise" style={{ width: 360, maxWidth: "100%", borderRadius: 12,
+        padding: 24, position: "relative", zIndex: 1 }}>
+        <div className="vs-wordmark" style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 2 }}>Vidsheet</div>
         <div style={{ fontSize: 13, color: "var(--text-dim, #9aa0ad)", marginBottom: 18 }}>
           {mode === "login" ? "Sign in to continue" : "Redeem your license key"}
         </div>
