@@ -2,6 +2,7 @@
 import { useRef, useState } from "react";
 import { startYoutube, startUpload, startDemo, JobStatus } from "@/lib/api";
 import NoteRain from "./NoteRain";
+import ConfirmDialog from "./ConfirmDialog";
 
 const PRESETS = [
   { id: "fast", label: "Fast", desc: "Downscaled, quick preview" },
@@ -15,8 +16,19 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // the queue action waiting on the rights-confirmation dialog
+  const [pending, setPending] = useState<(() => Promise<JobStatus>) | null>(null);
 
-  async function guard(fn: () => Promise<JobStatus>) {
+  // Ask for rights confirmation before every queue. Store the action; the dialog
+  // runs it on agreement.
+  function requestQueue(fn: () => Promise<JobStatus>) {
+    setPending(() => fn);
+  }
+
+  async function runPending() {
+    const fn = pending;
+    setPending(null);
+    if (!fn) return;
     setBusy(true);
     setErr(null);
     try {
@@ -41,6 +53,13 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
         </div>
 
         <div className="panel vs-panel" style={{ borderRadius: 12, padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 12,
+            fontSize: 12, color: "var(--text-dim)", background: "var(--panel-2)",
+            border: "1px solid var(--border-soft)", borderRadius: 7, padding: "8px 11px" }}>
+            <span>🎹</span>
+            <span>Only <strong style={{ color: "var(--text)" }}>Synthesia-style</strong> piano-roll videos
+              (falling colored note bars over a keyboard) are supported.</span>
+          </div>
           <div className="label" style={{ marginBottom: 8 }}>YouTube or direct video URL</div>
           <div style={{ display: "flex", gap: 8 }}>
             <input
@@ -48,12 +67,12 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
               placeholder="https://www.youtube.com/watch?v=…"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && url && guard(() => startYoutube(url, preset))}
+              onKeyDown={(e) => e.key === "Enter" && url && !busy && requestQueue(() => startYoutube(url, preset))}
             />
             <button
               className="btn btn-primary"
               disabled={!url || busy}
-              onClick={() => guard(() => startYoutube(url, preset))}
+              onClick={() => requestQueue(() => startYoutube(url, preset))}
             >
               Analyze
             </button>
@@ -69,7 +88,7 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
             <button className="btn" disabled={busy} onClick={() => fileRef.current?.click()} style={{ flex: 1, justifyContent: "center" }}>
               Upload video (MP4 / MOV / WebM / MKV)
             </button>
-            <button className="btn" disabled={busy} onClick={() => guard(() => startDemo("maximum"))}>
+            <button className="btn" disabled={busy} onClick={() => requestQueue(() => startDemo("maximum"))}>
               Run demo
             </button>
             <input
@@ -79,7 +98,8 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
               hidden
               onChange={(e) => {
                 const f = e.target.files?.[0];
-                if (f) guard(() => startUpload(f, preset));
+                if (f) requestQueue(() => startUpload(f, preset));
+                e.target.value = "";
               }}
             />
           </div>
@@ -114,7 +134,15 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
             </div>
           )}
         </div>
+
+        <div style={{ textAlign: "center", marginTop: 14, fontSize: 11, color: "var(--text-faint)" }}>
+          <a href="/terms" target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
+            Terms of Service
+          </a>
+        </div>
       </div>
+
+      <ConfirmDialog open={pending !== null} onConfirm={runPending} onCancel={() => setPending(null)} />
     </div>
   );
 }

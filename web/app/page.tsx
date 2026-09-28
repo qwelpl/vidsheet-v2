@@ -4,7 +4,7 @@ import { JobStatus, Project, getJob, getResult } from "@/lib/api";
 import Landing from "./components/Landing";
 import Progress from "./components/Progress";
 import Workspace from "./components/Workspace";
-import LogoutButton from "./components/LogoutButton";
+import AccountMenu from "./components/AccountMenu";
 
 export default function Page() {
   const [job, setJob] = useState<JobStatus | null>(null);
@@ -57,7 +57,7 @@ export default function Page() {
       ) : (
         <Progress job={job} onCancel={reset} />
       )}
-      <LogoutButton />
+      <AccountMenu />
     </>
   );
 }
