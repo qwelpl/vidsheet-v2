@@ -121,3 +121,41 @@ export async function login(username: string, password: string): Promise<AuthRes
     return { ok: false, error: "Wrong username or password" };
   return { ok: true, username };
 }
+
+export async function changePassword(
+  username: string, currentPassword: string, newPassword: string): Promise<AuthResult> {
+  if ((newPassword || "").length < 8)
+    return { ok: false, error: "New password must be at least 8 characters" };
+  const db = await readDB();
+  const user = db.users[username.toLowerCase()];
+  if (!user) return { ok: false, error: "Account not found" };
+  const cur = await derive(currentPassword || "", fromHex(user.salt));
+  if (!timingSafeEqual(cur, user.hash))
+    return { ok: false, error: "Current password is incorrect" };
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  user.salt = toHex(salt);
+  user.hash = await derive(newPassword, salt);
+  await writeDB(db);
+  return { ok: true, username };
+}
+
+export async function changeUsername(
+  username: string, currentPassword: string, newUsername: string): Promise<AuthResult> {
+  newUsername = (newUsername || "").trim();
+  if (!USERNAME_RE.test(newUsername))
+    return { ok: false, error: "Username must be 3-32 chars: letters, numbers, . _ -" };
+  const db = await readDB();
+  const user = db.users[username.toLowerCase()];
+  if (!user) return { ok: false, error: "Account not found" };
+  const cur = await derive(currentPassword || "", fromHex(user.salt));
+  if (!timingSafeEqual(cur, user.hash))
+    return { ok: false, error: "Current password is incorrect" };
+  const from = username.toLowerCase();
+  const to = newUsername.toLowerCase();
+  if (to !== from && db.users[to])
+    return { ok: false, error: "That username is taken" };
+  delete db.users[from];
+  db.users[to] = user;
+  await writeDB(db);
+  return { ok: true, username: newUsername };
+}
