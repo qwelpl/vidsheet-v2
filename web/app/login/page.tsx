@@ -47,7 +47,7 @@ export default function LoginPage() {
       <NoteRain />
       <div className="panel vs-panel vs-rise" style={{ width: 360, maxWidth: "100%", borderRadius: 12,
         padding: 24, position: "relative", zIndex: 1 }}>
-        <div className="vs-wordmark" style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 2 }}>Vidsheet</div>
+        <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 2, color: "var(--text)" }}>Vidsheet</div>
         <div style={{ fontSize: 13, color: "var(--text-dim, #9aa0ad)", marginBottom: 18 }}>
           {mode === "login" ? "Sign in to continue" : "Redeem your license key"}
         </div>

@@ -32,8 +32,7 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
       <NoteRain />
       <div className="vs-rise" style={{ width: 620, maxWidth: "92vw", position: "relative", zIndex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 10 }}>
-          <span className="vs-glow-dot" />
-          <h1 className="vs-wordmark" style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-0.03em", margin: 0 }}>
+          <h1 style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-0.03em", margin: 0, color: "var(--text)" }}>
             Vidsheet
           </h1>
           <span style={{ color: "var(--text-faint)", fontSize: 12, alignSelf: "flex-end", paddingBottom: 6 }}>

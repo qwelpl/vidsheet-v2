@@ -18,10 +18,9 @@ export default function LogoutButton() {
       title="Log out"
       style={{
         position: "fixed", right: 10, bottom: 10, zIndex: 50,
-        background: "#0b0c10cc", color: "var(--text-dim, #9aa0ad)",
-        border: "1px solid var(--border, #23262d)", borderRadius: 7,
-        padding: "5px 10px", fontSize: 11.5, cursor: "pointer",
-        backdropFilter: "blur(6px)",
+        background: "#e0533a", color: "#fff",
+        border: "1px solid #e0533a", borderRadius: 7,
+        padding: "5px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer",
       }}
     >
       {busy ? "…" : "Log out"}
