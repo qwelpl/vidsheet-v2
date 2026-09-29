@@ -27,8 +27,10 @@ from synthesia.exporters import (write_midi, write_csv, write_musicxml,
                                  write_json)
 
 app = FastAPI(title="Synthesia Reconstruction Engine")
+# Comma-separated list of allowed web origins, e.g. the Vercel domain.
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["*"], allow_headers=["*"],
 )
 
 WORK = os.path.join(tempfile.gettempdir(), "synthesia_jobs")
