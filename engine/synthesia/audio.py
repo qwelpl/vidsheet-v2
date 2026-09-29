@@ -78,7 +78,10 @@ def drop_unsupported_short(notes: list[NoteEvent], onsets: np.ndarray,
     keep = []
     removed = 0
     for n in notes:
-        if n.duration <= max_dur:
+        # a re-strike is a visually-confirmed re-attack (leading-edge notch); the
+        # audio onset detector blurs rapid same-key repeats into one attack, so do
+        # not require separate audio support for these or fast repeats vanish.
+        if n.duration <= max_dur and "restrike" not in n.issues:
             i = int(np.searchsorted(onsets, n.start))
             near = min((abs(onsets[j] - n.start) for j in (i - 1, i)
                         if 0 <= j < onsets.size), default=1e9)
