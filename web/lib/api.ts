@@ -1,7 +1,11 @@
 // Backend client + reconstruction data types.
 
+// Production falls back to the Render-hosted engine (see render.yaml).
 export const API =
-  process.env.NEXT_PUBLIC_API || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API ||
+  (process.env.NODE_ENV === "production"
+    ? "https://reprise-engine.onrender.com"
+    : "http://localhost:8000");
 
 export type Hand = "left" | "right" | "unknown";
 
