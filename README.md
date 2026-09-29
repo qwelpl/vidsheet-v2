@@ -68,7 +68,7 @@ docker build -t reprise-engine .
 docker run -p 8000:8000 -e ALLOWED_ORIGINS=https://<your-app>.vercel.app reprise-engine
 ```
 
-Keep it to one instance/worker. `render.yaml` deploys it to Render (Standard plan: always on, 2 GB) as
+Keep it to one instance/worker. `render.yaml` deploys it to Render as
 `reprise-engine.onrender.com`, which production web builds use by default.
 To use another host, set `NEXT_PUBLIC_API=https://<engine-host>` in the Vercel
 project and redeploy (the value is baked in at build time).
