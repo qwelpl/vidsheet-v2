@@ -56,23 +56,6 @@ npm run dev            # http://localhost:3000  (or next free port)
 Open the UI, paste a YouTube URL / upload a video / click **Run demo**, then
 **Analyze**.
 
-### Deploying
-
-The web UI deploys to Vercel from `web/`. The engine cannot run on Vercel: jobs
-live in process memory, run in background threads and need `ffmpeg`/`yt-dlp`.
-Host it as a single long-running container instead (Render, Fly.io, Railway, a VPS):
-
-```bash
-cd engine
-docker build -t reprise-engine .
-docker run -p 8000:8000 -e ALLOWED_ORIGINS=https://<your-app>.vercel.app reprise-engine
-```
-
-Keep it to one instance/worker. `render.yaml` deploys it to Render as
-`reprise-engine.onrender.com`, which production web builds use by default.
-To use another host, set `NEXT_PUBLIC_API=https://<engine-host>` in the Vercel
-project and redeploy (the value is baked in at build time).
-
 ### CLI (no server)
 
 ```bash
