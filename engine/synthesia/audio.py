@@ -103,7 +103,13 @@ def snap_onsets(notes: list[NoteEvent], onsets: np.ndarray,
         return 0
     onsets = np.sort(onsets)
     refined = 0
-    for n in notes:
+    # A key cannot sound twice at the same instant, so at most one note of a given
+    # pitch may snap to any one attack. The audio detector blurs a rapid same-key
+    # repeat into a single attack; without this guard two visually-distinct
+    # re-strikes both snap to it, collide, and one is later dropped - the repeat
+    # is lost. Earliest note claims the attack; the rest keep their detected time.
+    claimed: set = set()
+    for n in sorted(notes, key=lambda x: x.start):
         idx = int(np.searchsorted(onsets, n.start))
         best, bestd = None, tol
         for j in (idx - 1, idx):
@@ -111,7 +117,13 @@ def snap_onsets(notes: list[NoteEvent], onsets: np.ndarray,
                 d = abs(onsets[j] - n.start)
                 if d < bestd:
                     bestd, best = d, float(onsets[j])
-        if best is not None and abs(best - n.start) > 1e-4:
+        if best is None:
+            continue
+        key = (n.midi, round(best, 4))
+        if key in claimed:
+            continue          # a same-pitch note already took this attack
+        claimed.add(key)
+        if abs(best - n.start) > 1e-4:
             dur = n.duration
             n.start = best
             n.end = best + dur
