@@ -24,6 +24,13 @@ from .detect import FrameObservation, LaneRun
 from .keyboard import KeyboardGeometry
 from .model import NoteEvent
 
+# Largest jump in stored frame index still treated as one continuous note. A lane
+# with no bar at the strike carries no runs and is absent from this sparse
+# history, so a bigger jump means the lane fell silent (the note ended) rather
+# than briefly flickered - without this a note bridges the silence to the next
+# far-off onset and is held for seconds (§11).
+_GAP_FRAMES = 3
+
 
 @dataclass
 class LaneHistory:
@@ -156,16 +163,20 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
         # never extend past the next onset in this lane (a real occupancy gap OR a
         # re-strike notch), so repeats stay distinct.
         cap = next_onset[onset_frame]
-        # extend the played span while it stays occupied, tolerating tiny
-        # frame gaps (compression flicker), but a real repeat gap ends it.
+        # extend the played span while it stays occupied AND frame-contiguous. A
+        # lane with no bar at the strike is absent from the sparse history, so the
+        # next stored frame can be seconds later; the contiguity guard stops the
+        # note bridging that silence and ballooning to the next onset.
         j = i
-        while j + 1 < cap and (occ[j + 1] or _is_flicker(frames, j, occ)):
+        while (j + 1 < cap and (occ[j + 1] or _is_flicker(frames, j, occ))
+               and frames[j + 1] - frames[j] <= _GAP_FRAMES):
             j += 1
         # then keep extending through a HELD (clamped, non-descending) edge in the
         # wider hold zone - a note behind a hit-flash - but never past the next
         # note's onset in this lane.
         while (j + 1 < cap and hold[j + 1]
-               and bottom_s[j + 1] <= bottom_s[j] + 3):   # not a fresh descent
+               and bottom_s[j + 1] <= bottom_s[j] + 3       # not a fresh descent
+               and frames[j + 1] - frames[j] <= _GAP_FRAMES):
             j += 1
         offset_frame = j
 
@@ -208,17 +219,30 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
             on_conf = 0.4
             on_flags = ["onset_extrapolated"]
 
+        # occupancy release: the last frame the leading edge is still at the strike
+        # (frame-contiguous), i.e. when the bar has cleared. A trustworthy visible
+        # length may slightly exceed it (the trailing edge crosses after), but not
+        # by a lot; a gross overshoot means the approach trajectory latched onto a
+        # neighbouring/bridge-merged stack, so fall back to the observed release.
+        occ_release = onset + (h.times[offset_frame] - h.times[onset_frame])
         # duration: prefer the visible bar length (measured in the clean roll,
         # away from the strike-line glow) when the trajectory is trustworthy;
         # otherwise the observed release, then the occupancy span.
-        if dur_from_len is not None and vel_ok and not top_clamped:
+        if (dur_from_len is not None and vel_ok and not top_clamped and not is_rs
+                and onset + dur_from_len <= occ_release + 0.20):
             offset = onset + dur_from_len
             dconf = 0.85
         elif not no_release and offset_r > onset:
             offset = offset_r
             dconf = off_conf
         else:
-            offset = max(offset_r, onset + (h.times[offset_frame] - h.times[onset_frame]))
+            # No trustworthy visible length and no clean release: fall back to the
+            # frame-contiguous occupancy release. offset_r is extrapolated here (and
+            # can be gross garbage when the approach trajectory latched onto a wrong
+            # bar), so only prefer it when it is a plausible small extension.
+            offset = occ_release
+            if offset_r > onset and offset_r <= occ_release + 0.20:
+                offset = max(offset_r, occ_release)
             dconf = 0.4
             off_flags = list(set(off_flags + ["offset_extrapolated"]))
 
