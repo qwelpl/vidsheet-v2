@@ -138,8 +138,15 @@ def detect_theme(
         return ThemeModel(clusters=[ColorCluster(90, float(S.mean()), float(V.mean()), 1.0)],
                           sat_min=rainbow_sat, val_min=val_min, rainbow=True)
 
-    # find up to 3 dominant, well-separated hue peaks
-    peaks = _hue_peaks(hist, min_sep=12, max_peaks=3)
+    # find up to 3 dominant, well-separated hue peaks. Peaks must be at least the
+    # classification radius (22, see ``classify``) apart: two centres closer than
+    # that are not separable at classify time, and in practice are one hand's two
+    # brightness tiers (e.g. a bright core at hue 46 and a dark tier at hue 60).
+    # A smaller gap let a single hand split into two clusters and consume both
+    # kept slots, dropping the other hand's colour entirely (a pale, less
+    # saturated hand is already under-weighted by the sat^2 hue weighting), which
+    # collapsed hand assignment to a naive pitch split.
+    peaks = _hue_peaks(hist, min_sep=22, max_peaks=3)
     clusters = []
     total = hist.sum()
     for p in peaks:
