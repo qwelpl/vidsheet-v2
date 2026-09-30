@@ -75,6 +75,18 @@ def detect_theme(
     # detected cluster at the end (never above the caller's cap).
     cap_sat_min = sat_min
     floor = 30
+    # When notes are composited over a still image (an album-art / character
+    # backdrop rather than a black roll), that background is saturated and static,
+    # so clustering every roll pixel lets the backdrop's colour masquerade as the
+    # dominant note colour. Notes, unlike the backdrop, are transient at any given
+    # pixel: across time-spread samples a pixel shows a note only briefly, so the
+    # per-pixel temporal median is the background. Keep only pixels that deviate
+    # from it - the moving notes - so the backdrop drops out. Degrades gracefully:
+    # over a black/static roll the median is the background too, and note pixels
+    # still deviate, so ordinary themes are unaffected.
+    bg = None
+    if len(frames_hsv_roll) >= 8 and len({f.shape for f in frames_hsv_roll}) == 1:
+        bg = np.median(np.stack(frames_hsv_roll), axis=0)
     hues = []
     sats = []
     vals = []
@@ -83,6 +95,10 @@ def detect_theme(
         s = hsv[..., 1].ravel()
         v = hsv[..., 2].ravel()
         m = (s >= floor) & (v >= val_min)
+        if bg is not None:
+            dv = np.abs(v.astype(np.int16) - bg[..., 2].ravel().astype(np.int16))
+            ds = np.abs(s.astype(np.int16) - bg[..., 1].ravel().astype(np.int16))
+            m &= (dv >= 35) | (ds >= 40)
         hues.append(h[m])
         sats.append(s[m])
         vals.append(v[m])
@@ -163,9 +179,13 @@ def detect_theme(
             weight=weight,
         ))
     clusters.sort(key=lambda c: -c.weight)
-    # drop negligible clusters (compression fringe, particle tints) but always
-    # keep at least the two dominant hand colours if present.
-    kept = [c for i, c in enumerate(clusters) if i < 2 or c.weight >= 0.15]
+    # Keep the dominant colour, plus any further colour carrying real mass. A
+    # second hand's colour is a substantial fraction of note pixels (the weaker
+    # hand in §16 still ran ~0.22), whereas compression fringe, particle tints or
+    # residual backdrop bleed sit far below that. A flat "always keep top 2" let
+    # such a sliver pose as a second hand, turning a genuinely single-colour theme
+    # into a two-colour one; require the runners-up to clear a mass floor instead.
+    kept = [c for i, c in enumerate(clusters) if i == 0 or c.weight >= 0.12]
     # Detector saturation floor from the palest kept colour, so a pastel hand is
     # admitted while the near-zero background stays out. Never above the cap.
     pale = min((c.sat for c in kept), default=cap_sat_min)
