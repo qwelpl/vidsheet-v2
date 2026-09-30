@@ -75,18 +75,31 @@ def detect_theme(
     # detected cluster at the end (never above the caller's cap).
     cap_sat_min = sat_min
     floor = 30
-    # When notes are composited over a still image (an album-art / character
-    # backdrop rather than a black roll), that background is saturated and static,
-    # so clustering every roll pixel lets the backdrop's colour masquerade as the
-    # dominant note colour. Notes, unlike the backdrop, are transient at any given
-    # pixel: across time-spread samples a pixel shows a note only briefly, so the
-    # per-pixel temporal median is the background. Keep only pixels that deviate
-    # from it - the moving notes - so the backdrop drops out. Degrades gracefully:
-    # over a black/static roll the median is the background too, and note pixels
-    # still deviate, so ordinary themes are unaffected.
+    # When notes are composited over a STILL image (album art, a character
+    # montage) rather than a black roll, that backdrop is saturated and unmoving,
+    # so clustering every roll pixel lets its colour masquerade as the dominant
+    # note colour. Notes are transient at any given pixel, so the per-pixel
+    # temporal median across time-spread samples is the backdrop; keep only pixels
+    # that deviate from it and the backdrop drops out.
+    #
+    # But the backdrop is NOT always still - notes are just as often composited
+    # over MOVING footage (a music video, an animation). There every pixel changes
+    # frame to frame, so a median-deviation mask would keep the whole background
+    # and defeat itself. So only subtract the median when the roll is actually
+    # static; detect that by how much of it stays put across samples. Over moving
+    # footage we fall back to clustering all pixels, which already tolerates a
+    # moving backdrop because its ever-changing colours never form a stable hue
+    # peak the way a note colour does (per-frame normalisation below).
     bg = None
     if len(frames_hsv_roll) >= 8 and len({f.shape for f in frames_hsv_roll}) == 1:
-        bg = np.median(np.stack(frames_hsv_roll), axis=0)
+        med = np.median(np.stack(frames_hsv_roll), axis=0)
+        med_v = med[..., 2].astype(np.int16)
+        still = float(np.mean([
+            np.mean(np.abs(f[..., 2].astype(np.int16) - med_v) < 12)
+            for f in frames_hsv_roll
+        ]))
+        if still > 0.6:  # most of the roll is unchanging -> a still backdrop
+            bg = med
     hues = []
     sats = []
     vals = []
