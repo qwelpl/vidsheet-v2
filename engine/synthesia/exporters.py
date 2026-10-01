@@ -14,6 +14,7 @@ from typing import Optional
 
 from .model import NoteEvent, Hand, midi_to_name
 from .tempo import TempoAnalysis
+from .key import detect_key, build_speller
 
 PPQ = 960
 
@@ -118,6 +119,9 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
     left = sorted([n for n in notes if n.hand != Hand.RIGHT], key=lambda n: n.start)
     right = sorted([n for n in notes if n.hand == Hand.RIGHT], key=lambda n: n.start)
 
+    key = detect_key(notes)
+    spell = build_speller(key.fifths)
+
     out = io.StringIO()
     out.write('<?xml version="1.0" encoding="UTF-8"?>\n')
     out.write('<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" '
@@ -128,13 +132,13 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
               '  </part-list>\n')
     out.write('  <part id="P1">\n')
     _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
-                    to_div, tempo.bpm)
+                    to_div, tempo.bpm, key, spell)
     out.write('  </part>\n</score-partwise>\n')
     return out.getvalue()
 
 
 def _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
-                    to_div, bpm):
+                    to_div, bpm, key, spell):
     all_notes = left + right
     if not all_notes:
         end_div = divisions * beats_per_measure
@@ -148,7 +152,8 @@ def _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
         if m == 0:
             out.write('      <attributes>\n')
             out.write(f'        <divisions>{divisions}</divisions>\n')
-            out.write('        <key><fifths>0</fifths></key>\n')
+            out.write(f'        <key><fifths>{key.fifths}</fifths>'
+                      f'<mode>{key.mode}</mode></key>\n')
             out.write(f'        <time><beats>{beats_per_measure}</beats>'
                       f'<beat-type>{beat_type}</beat-type></time>\n')
             out.write('        <staves>2</staves>\n')
@@ -160,9 +165,9 @@ def _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
                       f'<per-minute>{int(round(bpm))}</per-minute></metronome>'
                       f'</direction-type><sound tempo="{int(round(bpm))}"/></direction>\n')
         m0, m1 = m * per_measure, (m + 1) * per_measure
-        _write_staff(out, right, 1, m0, m1, per_measure, to_div, divisions)
+        _write_staff(out, right, 1, m0, m1, per_measure, to_div, divisions, spell)
         out.write(f'      <backup><duration>{per_measure}</duration></backup>\n')
-        _write_staff(out, left, 2, m0, m1, per_measure, to_div, divisions)
+        _write_staff(out, left, 2, m0, m1, per_measure, to_div, divisions, spell)
         out.write('    </measure>\n')
 
 
@@ -170,7 +175,7 @@ _TYPE_BY_DIV = {16: "whole", 8: "half", 4: "quarter", 2: "eighth", 1: "16th"}
 
 
 def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
-                 min_rest_div=2):
+                 spell, min_rest_div=2):
     # Gather onsets in this measure, grouped by start division (chords). A single
     # MusicXML voice is monophonic, so overlapping notes are flattened: each note
     # is spaced to the NEXT onset, guaranteeing every onset lands on its true
@@ -198,7 +203,7 @@ def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
         if 0 < next_pos - (pos + dur) < min_rest_div:
             dur = next_pos - pos
         for i, n in enumerate(chord):
-            _write_pitch(out, n, dur, staff, divisions, is_chord=(i > 0))
+            _write_pitch(out, n, dur, staff, divisions, spell, is_chord=(i > 0))
         cursor = pos + dur
         # a genuine gap (>= min_rest_div) to the next onset stays a rest so the
         # next onset still lands exactly on its division
@@ -216,10 +221,8 @@ def _dur_type(dur: int) -> str:
     return "16th"
 
 
-def _write_pitch(out, n, dur, staff, divisions, is_chord):
-    step = n.name[0]
-    alter = 1 if "#" in n.name else 0
-    octave = int(''.join(c for c in n.name if c.isdigit() or c == '-'))
+def _write_pitch(out, n, dur, staff, divisions, spell, is_chord):
+    step, alter, octave = spell(n.midi)
     out.write('      <note>\n')
     if is_chord:
         out.write('        <chord/>\n')
