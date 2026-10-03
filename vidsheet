@@ -1,66 +1,178 @@
 #!/usr/bin/env bash
-# vidsheet - launch the engine and web UI locally and open the app in a browser.
+# vidsheet - local Synthesia-to-sheet-music tool.
 #
-# Running locally keeps YouTube downloads on your own residential IP, which
-# avoids the datacenter-IP block that breaks cloud-hosted engines.
+#   vidsheet                       start the app, open it in your browser
+#   vidsheet <url|file>            start the app attached to that source + analyze
+#   vidsheet analyze <url|file>    headless: write MIDI/CSV/MusicXML to --out
+#   vidsheet install | uninstall   add/remove a `vidsheet` command on your PATH
+#   vidsheet -h | --help
+#
+# Flags: --preset fast|balanced|maximum  --out DIR (analyze)
+#        --engine-port N  --web-port N  --no-open
+#
+# Everything runs locally, so YouTube downloads use your own residential IP and
+# dodge the datacenter-IP block that cloud hosts hit.
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")" && pwd)"
+# Resolve this script's real directory even when invoked through a PATH symlink.
+src="${BASH_SOURCE[0]}"
+while [ -h "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" != /* ]] && src="$dir/$src"
+done
+root="$(cd -P "$(dirname "$src")" && pwd)"
+
 ENGINE_PORT="${ENGINE_PORT:-8000}"
 WEB_PORT="${WEB_PORT:-3000}"
+PRESET="balanced"
+OUT="out"
+OPEN=1
 
-# --- preflight -------------------------------------------------------------
-missing=0
-need() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "  [x] $1 - $2"
-    missing=1
+usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$src"; }
+
+# --- helpers ---------------------------------------------------------------
+is_url() { [[ "$1" =~ ^https?:// ]]; }
+
+preflight() {
+  local missing=0
+  need() {
+    command -v "$1" >/dev/null 2>&1 || { echo "  [x] $1 - $2"; missing=1; }
+  }
+  need python3.12 "install Python 3.12 (brew install python@3.12)"
+  need node       "install Node.js (brew install node) - also yt-dlp's JS runtime"
+  need npm        "ships with Node.js"
+  need ffmpeg     "brew install ffmpeg"
+  need yt-dlp     "brew install yt-dlp"
+  if [ "$missing" -ne 0 ]; then
+    echo "Install the missing tools above, then re-run vidsheet." >&2
+    exit 1
   fi
 }
-echo "Checking prerequisites..."
-need python3.12 "install Python 3.12 (brew install python@3.12)"
-need node       "install Node.js (brew install node) - also used as yt-dlp's JS runtime"
-need npm        "ships with Node.js"
-need ffmpeg     "brew install ffmpeg"
-need yt-dlp     "brew install yt-dlp"
-if [ "$missing" -ne 0 ]; then
-  echo "Install the missing tools above, then re-run ./vidsheet." >&2
-  exit 1
-fi
-# MuseScore is only needed for PDF export; warn but don't block.
-command -v mscore >/dev/null 2>&1 || command -v musescore >/dev/null 2>&1 \
-  || echo "  [!] MuseScore not found - sheet-music PDF export unavailable (brew install --cask musescore)"
 
-# --- bootstrap -------------------------------------------------------------
-if [ ! -d "$root/engine/.venv" ]; then
-  echo "Setting up engine venv..."
-  (cd "$root/engine" && python3.12 -m venv .venv && ./.venv/bin/pip install -q -r requirements.txt yt-dlp)
-fi
-if [ ! -d "$root/web/node_modules" ]; then
-  echo "Installing web deps..."
-  (cd "$root/web" && npm install)
-fi
-
-# --- launch ----------------------------------------------------------------
-echo "Starting engine on :${ENGINE_PORT} and web UI on :${WEB_PORT} ..."
-(cd "$root/engine" && ./.venv/bin/python -m uvicorn server:app --port "$ENGINE_PORT") &
-API=$!
-(cd "$root/web" && NEXT_PUBLIC_API="http://localhost:${ENGINE_PORT}" npm run dev -- --port "$WEB_PORT") &
-WEB=$!
-trap 'kill $API $WEB 2>/dev/null || true' EXIT INT TERM
-
-# Wait for the engine to answer health, then open the browser.
-url="http://localhost:${WEB_PORT}"
-for _ in $(seq 1 60); do
-  if curl -fsS "http://localhost:${ENGINE_PORT}/api/health" >/dev/null 2>&1; then
-    echo "Engine ready. Opening ${url}"
-    if command -v open >/dev/null 2>&1; then open "$url"
-    elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$url" >/dev/null 2>&1 || true
-    fi
-    break
+bootstrap_engine() {
+  if [ ! -d "$root/engine/.venv" ]; then
+    echo "Setting up engine venv..."
+    (cd "$root/engine" && python3.12 -m venv .venv \
+      && ./.venv/bin/pip install -q -r requirements.txt yt-dlp)
   fi
-  sleep 1
+}
+
+bootstrap_web() {
+  if [ ! -d "$root/web/node_modules" ]; then
+    echo "Installing web deps..."
+    (cd "$root/web" && npm install)
+  fi
+}
+
+py() { "$root/engine/.venv/bin/python" "$@"; }
+
+# Create a job on the running engine, echo its id. $1 = url|file.
+create_job() {
+  local source="$1" json
+  if is_url "$source"; then
+    json="$(curl -fsS -X POST "http://localhost:${ENGINE_PORT}/api/analyze/youtube" \
+      -F "url=${source}" -F "preset=${PRESET}")"
+  else
+    [ -f "$source" ] || { echo "No such file: $source" >&2; exit 1; }
+    json="$(curl -fsS -X POST "http://localhost:${ENGINE_PORT}/api/analyze/upload" \
+      -F "file=@${source}" -F "preset=${PRESET}")"
+  fi
+  printf '%s' "$json" | py -c 'import sys,json; print(json.load(sys.stdin)["id"])'
+}
+
+open_browser() {
+  [ "$OPEN" -eq 1 ] || return 0
+  if command -v open >/dev/null 2>&1; then open "$1"
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1" >/dev/null 2>&1 || true
+  fi
+}
+
+# --- subcommands -----------------------------------------------------------
+cmd_launch() {
+  local source="${1:-}"
+  preflight
+  bootstrap_engine
+  bootstrap_web
+  echo "Starting engine on :${ENGINE_PORT} and web UI on :${WEB_PORT} ..."
+  (cd "$root/engine" && ./.venv/bin/python -m uvicorn server:app --port "$ENGINE_PORT") &
+  local api=$!
+  (cd "$root/web" && NEXT_PUBLIC_API="http://localhost:${ENGINE_PORT}" npm run dev -- --port "$WEB_PORT") &
+  local web=$!
+  trap 'kill $api $web 2>/dev/null || true' EXIT INT TERM
+
+  # Wait for the engine before creating a job / opening the browser.
+  local ready=0 _
+  for _ in $(seq 1 60); do
+    if curl -fsS "http://localhost:${ENGINE_PORT}/api/health" >/dev/null 2>&1; then
+      ready=1; break
+    fi
+    sleep 1
+  done
+  [ "$ready" -eq 1 ] || { echo "Engine did not come up." >&2; exit 1; }
+
+  local url="http://localhost:${WEB_PORT}"
+  if [ -n "$source" ]; then
+    echo "Submitting ${source} ..."
+    local id; id="$(create_job "$source")"
+    url="${url}/?job=${id}"
+    echo "Job ${id} started."
+  fi
+  echo "Opening ${url}"
+  open_browser "$url"
+  echo "Press Ctrl-C to stop."
+  wait
+}
+
+cmd_analyze() {
+  local source="${1:-}"
+  [ -n "$source" ] || { echo "usage: vidsheet analyze <url|file>" >&2; exit 1; }
+  preflight
+  bootstrap_engine
+  (cd "$root/engine" && exec ../engine/.venv/bin/python cli.py analyze "$source" \
+    --preset "$PRESET" --out "$OUT")
+}
+
+cmd_install() {
+  local dir="$HOME/.local/bin"
+  mkdir -p "$dir"
+  ln -sf "$root/vidsheet" "$dir/vidsheet"
+  echo "Linked $dir/vidsheet -> $root/vidsheet"
+  case ":$PATH:" in
+    *":$dir:"*) echo "You can now run 'vidsheet' from anywhere." ;;
+    *) echo "Add this to your shell profile:  export PATH=\"$dir:\$PATH\"" ;;
+  esac
+}
+
+cmd_uninstall() {
+  rm -f "$HOME/.local/bin/vidsheet"
+  echo "Removed $HOME/.local/bin/vidsheet"
+}
+
+# --- arg parsing -----------------------------------------------------------
+first=""; second=""; pcount=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --preset) PRESET="$2"; shift 2 ;;
+    --preset=*) PRESET="${1#*=}"; shift ;;
+    --out) OUT="$2"; shift 2 ;;
+    --out=*) OUT="${1#*=}"; shift ;;
+    --engine-port) ENGINE_PORT="$2"; shift 2 ;;
+    --web-port) WEB_PORT="$2"; shift 2 ;;
+    --no-open) OPEN=0; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) echo "unknown flag: $1" >&2; usage; exit 1 ;;
+    *)
+      if [ "$pcount" -eq 0 ]; then first="$1"; else second="$1"; fi
+      pcount=$((pcount + 1)); shift ;;
+  esac
 done
 
-echo "Press Ctrl-C to stop."
-wait
+case "$first" in
+  "")          cmd_launch "" ;;
+  install)     cmd_install ;;
+  uninstall)   cmd_uninstall ;;
+  analyze)     cmd_analyze "$second" ;;
+  help)        usage ;;
+  *)           cmd_launch "$first" ;;   # positional treated as a source
+esac

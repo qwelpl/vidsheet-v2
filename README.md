@@ -42,16 +42,20 @@ note-for-note exact (F1 = 1.0, onset error â‰ˆ 7 ms at 60 fps, duration error â‰
 Requires `ffmpeg`, `ffprobe`, `yt-dlp` on PATH, Python 3.12+, Node 20+.
 
 ```bash
-./vidsheet
+./vidsheet                      # start the app, open it in your browser
+./vidsheet <url|file>           # start the app attached to that source + analyze
+./vidsheet analyze <url|file>   # headless: write MIDI/CSV/MusicXML to --out
+./vidsheet install              # add a `vidsheet` command to your PATH (~/.local/bin)
 ```
 
-This bootstraps the engine venv and web deps on first run, starts the engine
-(`:8000`) and web UI (`:3000`) together, and opens the app in your browser.
-Running locally keeps YouTube downloads on your own residential IP, which
-avoids the datacenter-IP block that cloud hosts hit.
+The launcher bootstraps the engine venv and web deps on first run, starts the
+engine (`:8000`) and web UI (`:3000`), waits for the engine, and opens the app.
+Flags: `--preset fast|balanced|maximum`, `--out DIR`, `--engine-port N`,
+`--web-port N`, `--no-open`.
 
-Open the UI, paste a YouTube URL / upload a video / click **Run demo**, then
-**Analyze**.
+Running locally keeps YouTube downloads on your own residential IP, which
+avoids the datacenter-IP block that cloud hosts hit. After `./vidsheet install`
+you can run `vidsheet` from anywhere.
 
 Prefer to start the two processes by hand? The engine is just
 `./.venv/bin/python -m uvicorn server:app --port 8000` in `engine/` and
@@ -59,10 +63,13 @@ Prefer to start the two processes by hand? The engine is just
 
 ### CLI (no server)
 
+`./vidsheet analyze` wraps this; or call it directly in `engine/`:
+
 ```bash
 cd engine
-./.venv/bin/python cli.py demo --preset maximum --out out      # synthetic ground-truth run
-./.venv/bin/python cli.py analyze path/to/video.mp4 --preset maximum --out out
+./.venv/bin/python cli.py demo --preset maximum --out out              # synthetic ground-truth run
+./.venv/bin/python cli.py analyze path/to/video.mp4 --preset maximum   # local file
+./.venv/bin/python cli.py analyze 'https://youtu.be/...' --preset fast  # or a URL
 ```
 
 ## Tests
