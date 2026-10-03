@@ -157,8 +157,15 @@ def download(url: str, out_dir: str) -> tuple[str, str]:
         "-f", "bv*[height<=2160]+ba/b", "--merge-output-format", "mp4",
         "-S", "res,fps,vcodec", "--no-playlist", "-o", tmpl,
         "--print", "after_move:filepath", "--print", "after_move:title",
-        "--no-simulate", url,
+        "--no-simulate",
     ]
+    # YouTube blocks datacenter IPs (e.g. Render) and serves no player response.
+    # A cookies.txt exported from a logged-in browser gets past the wall. Path is
+    # supplied out-of-band (Render secret file) via YTDLP_COOKIES; never commit it.
+    cookies = os.environ.get("YTDLP_COOKIES")
+    if cookies and os.path.exists(cookies):
+        cmd += ["--cookies", cookies]
+    cmd.append(url)
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         tail = (res.stderr or res.stdout or "").strip().splitlines()[-1:] or [""]
