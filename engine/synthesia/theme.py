@@ -198,7 +198,29 @@ def detect_theme(
     # residual backdrop bleed sit far below that. A flat "always keep top 2" let
     # such a sliver pose as a second hand, turning a genuinely single-colour theme
     # into a two-colour one; require the runners-up to clear a mass floor instead.
-    kept = [c for i, c in enumerate(clusters) if i == 0 or c.weight >= 0.12]
+    #
+    # BUT the sat^2 weighting above crushes a *pale* second hand: a pastel colour
+    # (e.g. a lavender right hand at saturation ~50) can be a quarter of the note
+    # pixels by COUNT yet score only a few percent of sat^2 mass, falling under the
+    # floor and collapsing the theme to one colour. So also rescue a runner-up that
+    # is a clearly distinct hue family from the dominant (>=35 away, where ordinary
+    # fringe never sits - it hugs the dominant hue) and holds real pixel-count mass.
+    dom_hue = clusters[0].hue
+
+    def _hue_dist(a: float, b: float) -> float:
+        return min(abs(a - b), 180 - abs(a - b))
+
+    def _count_share(hue: float) -> float:
+        if H.size == 0:
+            return 0.0
+        d = np.minimum(np.abs(H.astype(np.int16) - hue), 180 - np.abs(H.astype(np.int16) - hue))
+        return float((d <= 11).mean())
+
+    kept = [
+        c for i, c in enumerate(clusters)
+        if i == 0 or c.weight >= 0.12
+        or (_hue_dist(c.hue, dom_hue) >= 35 and _count_share(c.hue) >= 0.10)
+    ]
     # Detector saturation floor from the palest kept colour, so a pastel hand is
     # admitted while the near-zero background stays out. Never above the cap.
     pale = min((c.sat for c in kept), default=cap_sat_min)
