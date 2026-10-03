@@ -215,7 +215,7 @@ def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames,
             # Corroborating audio attacks that land on a milder dip also split, so
             # a re-strike the video only barely shows is still caught.
             for t in onsets:
-                if t_on + 0.05 < t < t_off - 0.03 and _restruck(fill, times, t):
+                if t_on + 0.12 < t < t_off - 0.03 and _restruck(fill, times, t):
                     splits.append(float(t))
             splits = _dedupe(sorted(splits), frame_dt * max(min_frames, 2))
             bounds = [t_on] + splits + [t_off]
@@ -270,19 +270,25 @@ def _restrike_times(fill: list[float], times: list[float], i: int, last_lit: int
 
 
 def _restruck(fill: list[float], times: list[float], t: float,
-              dip_frac: float = 0.75) -> bool:
-    """Is there a coverage dip in this key near time ``t`` (a re-strike)? Used to
-    confirm an audio attack: coverage near ``t`` falls meaningfully below the
-    local surroundings, or the key goes fully unlit."""
+              dip_frac: float = 0.7) -> bool:
+    """Is there a genuine re-strike trough in this key near time ``t``?
+
+    A real re-attack dips below BOTH the coverage just before it AND just after:
+    the key was lit, dimmed as it lifted, then re-lit. Requiring a two-sided
+    trough is what rejects a note's own onset ramp - a monotonic rise to full
+    coverage has no preceding peak to dip below - so an audio attack that merely
+    coincides with a note lighting up no longer carves a sliver off its front."""
+    n = len(fill)
     k = int(np.searchsorted(times, t))
-    lo, hi = max(0, k - 3), min(len(fill), k + 4)
-    if lo >= hi:
+    lo, hi = max(0, k - 3), min(n, k + 4)
+    if hi - lo < 3 or k <= lo or k >= hi - 1:
         return False
-    window = fill[lo:hi]
-    local_peak = max(window)
-    if local_peak <= 0:
+    left_peak = max(fill[lo:k + 1])
+    right_peak = max(fill[k:hi])
+    vmin = min(fill[max(0, k - 1):min(n, k + 2)])
+    if left_peak <= 0 or right_peak <= 0:
         return False
-    return min(fill[max(0, k - 2):min(len(fill), k + 3)]) <= local_peak * dip_frac
+    return vmin <= dip_frac * left_peak and vmin <= dip_frac * right_peak
 
 
 def _dedupe(ts: list[float], min_gap: float) -> list[float]:
