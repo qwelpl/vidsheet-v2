@@ -37,25 +37,34 @@ note-for-note exact (F1 = 1.0, onset error â‰ˆ 7 ms at 60 fps, duration error â‰
   piano roll, note inspector with corrections, confidence colouring, frame
   inspector, transport, exports.
 
-## Running
-
-Requires `ffmpeg`, `ffprobe`, `yt-dlp` on PATH, Python 3.12+, Node 20+.
+## Install
 
 ```bash
-./vidsheet                      # start the app, open it in your browser
-./vidsheet <url|file>           # start the app attached to that source + analyze
-./vidsheet analyze <url|file>   # headless: write MIDI/CSV/MusicXML to --out
-./vidsheet install              # add a `vidsheet` command to your PATH (~/.local/bin)
+brew install qwelpl/vidsheet/vidsheet
 ```
 
-The launcher bootstraps the engine venv and web deps on first run, starts the
-engine (`:8000`) and web UI (`:3000`), waits for the engine, and opens the app.
-Flags: `--preset fast|balanced|maximum`, `--out DIR`, `--engine-port N`,
-`--web-port N`, `--no-open`.
+This pulls the dependencies (`ffmpeg`, `node`, `python@3.12`, `yt-dlp`) and adds
+a `vidsheet` command. On first run it copies itself into `~/.local/share/vidsheet`
+and builds the Python venv + web deps there (needs internet and a few hundred MB).
+
+From a clone instead? `git clone` then run `./vidsheet` from the repo (optionally
+`./vidsheet install` to symlink it onto your PATH). Needs `ffmpeg`, `ffprobe`,
+`yt-dlp`, Python 3.12+, Node 20+.
+
+## Running
+
+```bash
+vidsheet                      # start the app, open it in your browser
+vidsheet <url|file>           # start the app attached to that source + analyze
+vidsheet analyze <url|file>   # headless: write MIDI/CSV/MusicXML to --out
+```
+
+The launcher starts the engine (`:8000`) and web UI (`:3000`), waits for the
+engine, and opens the app. Flags: `--preset fast|balanced|maximum`, `--out DIR`,
+`--engine-port N`, `--web-port N`, `--no-open`.
 
 Running locally keeps YouTube downloads on your own residential IP, which
-avoids the datacenter-IP block that cloud hosts hit. After `./vidsheet install`
-you can run `vidsheet` from anywhere.
+avoids the datacenter-IP block that cloud hosts hit.
 
 Prefer to start the two processes by hand? The engine is just
 `./.venv/bin/python -m uvicorn server:app --port 8000` in `engine/` and
