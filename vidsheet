@@ -21,7 +21,21 @@ while [ -h "$src" ]; do
   src="$(readlink "$src")"
   [[ "$src" != /* ]] && src="$dir/$src"
 done
-root="$(cd -P "$(dirname "$src")" && pwd)"
+script_dir="$(cd -P "$(dirname "$src")" && pwd)"
+
+# SRC = pristine source tree. Homebrew sets VIDSHEET_SRC to its read-only
+# libexec; a git clone just uses the script's own directory.
+SRC="${VIDSHEET_SRC:-$script_dir}"
+
+# WORK = where we actually run. If SRC is writable (a clone) we work in place;
+# otherwise (a read-only brew install) we sync the source into a per-user data
+# dir and bootstrap the venv / node_modules there.
+DATA="${VIDSHEET_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/vidsheet}"
+if [ -w "$SRC/engine" ] 2>/dev/null; then
+  WORK="$SRC"
+else
+  WORK="$DATA"
+fi
 
 ENGINE_PORT="${ENGINE_PORT:-8000}"
 WEB_PORT="${WEB_PORT:-3000}"
@@ -33,6 +47,28 @@ usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$src"; }
 
 # --- helpers ---------------------------------------------------------------
 is_url() { [[ "$1" =~ ^https?:// ]]; }
+
+# Mirror the pristine source into WORK (keeping the bootstrapped venv /
+# node_modules). No-op when working in place. Skipped when already in sync.
+sync_source() {
+  [ "$WORK" = "$SRC" ] && return 0
+  mkdir -p "$WORK"
+  if [ -f "$WORK/.src" ] && [ "$(cat "$WORK/.src")" = "$SRC" ]; then
+    return 0
+  fi
+  echo "Preparing vidsheet in $WORK ..."
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete \
+      --exclude '.git' --exclude 'engine/.venv' --exclude 'web/node_modules' \
+      --exclude 'web/.next' "$SRC"/ "$WORK"/
+  else
+    cp -R "$SRC"/. "$WORK"/
+  fi
+  # The source may be a read-only install (brew cellar); the working copy must
+  # be writable so we can build the venv / node_modules inside it.
+  chmod -R u+w "$WORK"
+  printf '%s' "$SRC" > "$WORK/.src"
+}
 
 preflight() {
   local missing=0
@@ -51,21 +87,21 @@ preflight() {
 }
 
 bootstrap_engine() {
-  if [ ! -d "$root/engine/.venv" ]; then
+  if [ ! -d "$WORK/engine/.venv" ]; then
     echo "Setting up engine venv..."
-    (cd "$root/engine" && python3.12 -m venv .venv \
+    (cd "$WORK/engine" && python3.12 -m venv .venv \
       && ./.venv/bin/pip install -q -r requirements.txt yt-dlp)
   fi
 }
 
 bootstrap_web() {
-  if [ ! -d "$root/web/node_modules" ]; then
+  if [ ! -d "$WORK/web/node_modules" ]; then
     echo "Installing web deps..."
-    (cd "$root/web" && npm install)
+    (cd "$WORK/web" && npm install)
   fi
 }
 
-py() { "$root/engine/.venv/bin/python" "$@"; }
+py() { "$WORK/engine/.venv/bin/python" "$@"; }
 
 # Create a job on the running engine, echo its id. $1 = url|file.
 create_job() {
@@ -92,12 +128,13 @@ open_browser() {
 cmd_launch() {
   local source="${1:-}"
   preflight
+  sync_source
   bootstrap_engine
   bootstrap_web
   echo "Starting engine on :${ENGINE_PORT} and web UI on :${WEB_PORT} ..."
-  (cd "$root/engine" && ./.venv/bin/python -m uvicorn server:app --port "$ENGINE_PORT") &
+  (cd "$WORK/engine" && ./.venv/bin/python -m uvicorn server:app --port "$ENGINE_PORT") &
   local api=$!
-  (cd "$root/web" && NEXT_PUBLIC_API="http://localhost:${ENGINE_PORT}" npm run dev -- --port "$WEB_PORT") &
+  (cd "$WORK/web" && NEXT_PUBLIC_API="http://localhost:${ENGINE_PORT}" npm run dev -- --port "$WEB_PORT") &
   local web=$!
   trap 'kill $api $web 2>/dev/null || true' EXIT INT TERM
 
@@ -128,16 +165,17 @@ cmd_analyze() {
   local source="${1:-}"
   [ -n "$source" ] || { echo "usage: vidsheet analyze <url|file>" >&2; exit 1; }
   preflight
+  sync_source
   bootstrap_engine
-  (cd "$root/engine" && exec ../engine/.venv/bin/python cli.py analyze "$source" \
+  (cd "$WORK/engine" && exec ./.venv/bin/python cli.py analyze "$source" \
     --preset "$PRESET" --out "$OUT")
 }
 
 cmd_install() {
   local dir="$HOME/.local/bin"
   mkdir -p "$dir"
-  ln -sf "$root/vidsheet" "$dir/vidsheet"
-  echo "Linked $dir/vidsheet -> $root/vidsheet"
+  ln -sf "$SRC/vidsheet" "$dir/vidsheet"
+  echo "Linked $dir/vidsheet -> $SRC/vidsheet"
   case ":$PATH:" in
     *":$dir:"*) echo "You can now run 'vidsheet' from anywhere." ;;
     *) echo "Add this to your shell profile:  export PATH=\"$dir:\$PATH\"" ;;
