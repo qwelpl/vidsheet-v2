@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# vidsheet - launch the engine and web UI locally and open the app in a browser.
+#
+# Running locally keeps YouTube downloads on your own residential IP, which
+# avoids the datacenter-IP block that breaks cloud-hosted engines.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")" && pwd)"
+ENGINE_PORT="${ENGINE_PORT:-8000}"
+WEB_PORT="${WEB_PORT:-3000}"
+
+# --- preflight -------------------------------------------------------------
+missing=0
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "  [x] $1 - $2"
+    missing=1
+  fi
+}
+echo "Checking prerequisites..."
+need python3.12 "install Python 3.12 (brew install python@3.12)"
+need node       "install Node.js (brew install node) - also used as yt-dlp's JS runtime"
+need npm        "ships with Node.js"
+need ffmpeg     "brew install ffmpeg"
+need yt-dlp     "brew install yt-dlp"
+if [ "$missing" -ne 0 ]; then
+  echo "Install the missing tools above, then re-run ./vidsheet." >&2
+  exit 1
+fi
+# MuseScore is only needed for PDF export; warn but don't block.
+command -v mscore >/dev/null 2>&1 || command -v musescore >/dev/null 2>&1 \
+  || echo "  [!] MuseScore not found - sheet-music PDF export unavailable (brew install --cask musescore)"
+
+# --- bootstrap -------------------------------------------------------------
+if [ ! -d "$root/engine/.venv" ]; then
+  echo "Setting up engine venv..."
+  (cd "$root/engine" && python3.12 -m venv .venv && ./.venv/bin/pip install -q -r requirements.txt yt-dlp)
+fi
+if [ ! -d "$root/web/node_modules" ]; then
+  echo "Installing web deps..."
+  (cd "$root/web" && npm install)
+fi
+
+# --- launch ----------------------------------------------------------------
+echo "Starting engine on :${ENGINE_PORT} and web UI on :${WEB_PORT} ..."
+(cd "$root/engine" && ./.venv/bin/python -m uvicorn server:app --port "$ENGINE_PORT") &
+API=$!
+(cd "$root/web" && NEXT_PUBLIC_API="http://localhost:${ENGINE_PORT}" npm run dev -- --port "$WEB_PORT") &
+WEB=$!
+trap 'kill $API $WEB 2>/dev/null || true' EXIT INT TERM
+
+# Wait for the engine to answer health, then open the browser.
+url="http://localhost:${WEB_PORT}"
+for _ in $(seq 1 60); do
+  if curl -fsS "http://localhost:${ENGINE_PORT}/api/health" >/dev/null 2>&1; then
+    echo "Engine ready. Opening ${url}"
+    if command -v open >/dev/null 2>&1; then open "$url"
+    elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$url" >/dev/null 2>&1 || true
+    fi
+    break
+  fi
+  sleep 1
+done
+
+echo "Press Ctrl-C to stop."
+wait

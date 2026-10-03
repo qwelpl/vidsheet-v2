@@ -259,9 +259,8 @@ async def update_notes(job_id: str, request: Request):
     return {"ok": True, "notes": len(notes)}
 
 
-# Accept HEAD as well as GET: uptime monitors (UptimeRobot et al.) probe with
-# HEAD by default, and a GET-only route answers 405 - which reads as "down" even
-# though the service is up. Both verbs keep the Render instance from idling.
+# The launcher polls this to know when the engine is ready before opening the
+# browser. Accept HEAD as well as GET so a plain liveness probe works too.
 @app.api_route("/api/health", methods=["GET", "HEAD"])
 def health():
     return {"ok": True, "jobs": len(JOBS)}
