@@ -38,6 +38,12 @@ class KeyLightSampler:
         self.kbbot = int(round(g.keyboard_bottom))
         self.kbh = max(4, self.kbbot - self.kbtop)
         self.hues = [c.hue for c in self.theme.clusters]
+        # A pale hand colour (e.g. a lavender right hand at saturation ~56) never
+        # clears a fixed sat_min of 80, so its lit keys read as unlit or get
+        # misattributed to the vivid hand's cluster - collapsing hand assignment.
+        # Follow the theme's own detected saturation floor instead, clamped so a
+        # near-grey keybed shadow still can't masquerade as a lit note.
+        self.sat_min = int(np.clip(self.theme.sat_min, 35, self.sat_min))
 
     def _region(self, lane) -> tuple[int, int, int, int]:
         """(y0, y1, x0, x1) of the key body to sample, avoiding the top glow
