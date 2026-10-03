@@ -145,9 +145,17 @@ def analyze(video_path: str, opts: Options,
               "progress": 0.09})
         v = _quick_fall_speed(meta, geom, theme, scale_w)
         kcol = keylight.KeyLightCollector(geom, theme)
+        # Track the falling bars in the SAME pass. The key light tells us which
+        # key and for how long, but it fades in a few frames after the real
+        # attack - and at a rate that differs with colour, skewing the two hands
+        # apart. The bar's leading edge crossing the strike line is the exact,
+        # colour-independent onset, so we use it to refine the timing below (§10).
+        bar_sampler = LaneSampler(geom, theme)
+        bar_coll = HistoryCollector(geom)
         n = 0
         for fr in videoio.stream_frames(meta, scale_width=scale_w):
             kcol.add(fr.time, fr.image)
+            bar_coll.add(bar_sampler.observe(fr.index, fr.time, fr.image))
             n += 1
             if n % 150 == 0:
                 down = sum(1 for l in kcol.hist.values() if l.lit and l.lit[-1] >= 0)
@@ -158,8 +166,12 @@ def analyze(video_path: str, opts: Options,
         notes = keylight.extract_notes(kcol.hist, geom, meta.fps,
                                        audio_onsets if audio_onsets is not None else _np.array([]),
                                        fill_thr=kcol.sampler.fill_thr)
+        v_bars = estimate_fall_speed(bar_coll.hist, geom)
+        bar_notes = extract_notes(bar_coll.hist, geom, meta.fps, v_bars)
+        refined = _refine_onsets_from_bars(notes, bar_notes)
         prog({"stage": "reconstruct",
-              "message": f"{len(notes)} notes (key-highlight)", "progress": 0.80})
+              "message": f"{len(notes)} notes (key-highlight; {refined} onsets from bars)",
+              "progress": 0.80})
     else:
         sampler = LaneSampler(geom, theme)
         collector = HistoryCollector(geom)
@@ -274,6 +286,49 @@ def _hitline_band_height(frames: list[np.ndarray], geom: kb.KeyboardGeometry,
         else:
             break
     return int(h)
+
+
+def _refine_onsets_from_bars(notes, bar_notes, tol: float = 0.14) -> int:
+    """Snap each key-light note's onset to its falling-bar strike-line crossing.
+
+    The bar edge reaches the strike line at the true attack instant, with no
+    colour-dependent fade lag, so it fixes both the absolute timing and the
+    left/right-hand skew that the key-light fade introduces. Only the onset moves
+    (within ``tol``); the key-light duration - a more reliable release signal -
+    is preserved. A bar onset is claimed by at most one note of its pitch so two
+    nearby notes don't collapse onto the same crossing."""
+    import bisect
+    import collections
+    by: dict[int, list[float]] = collections.defaultdict(list)
+    for b in bar_notes:
+        by[b.midi].append(float(b.start))
+    for m in by:
+        by[m].sort()
+    claimed: set = set()
+    refined = 0
+    for nte in sorted(notes, key=lambda x: x.start):
+        cands = by.get(nte.midi)
+        if not cands:
+            continue
+        i = bisect.bisect_left(cands, nte.start)
+        best, bestd = None, tol
+        for j in (i - 1, i):
+            if 0 <= j < len(cands):
+                d = abs(cands[j] - nte.start)
+                key = (nte.midi, round(cands[j], 4))
+                if d < bestd and key not in claimed:
+                    bestd, best, bestkey = d, cands[j], key
+        if best is None:
+            continue
+        claimed.add(bestkey)
+        if abs(best - nte.start) > 1e-4:
+            dur = nte.duration
+            nte.start = float(best)
+            nte.end = float(best) + dur
+            nte.timing_confidence = min(1.0, max(nte.timing_confidence, 0.85))
+            nte.flag("onset_from_bar")
+            refined += 1
+    return refined
 
 
 def _roll_is_composited(median: np.ndarray, geom) -> bool:
