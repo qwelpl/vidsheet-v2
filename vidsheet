@@ -27,14 +27,16 @@ script_dir="$(cd -P "$(dirname "$src")" && pwd)"
 # libexec; a git clone just uses the script's own directory.
 SRC="${VIDSHEET_SRC:-$script_dir}"
 
-# WORK = where we actually run. If SRC is writable (a clone) we work in place;
-# otherwise (a read-only brew install) we sync the source into a per-user data
-# dir and bootstrap the venv / node_modules there.
+# WORK = where we actually run. A git clone (no VIDSHEET_SRC) works in place.
+# A packaged install (Homebrew sets VIDSHEET_SRC) must never write into its
+# keg - even on Apple Silicon where the cellar is user-writable - because an
+# upgrade would wipe it; so we sync the source into a per-user data dir and
+# build the venv / node_modules there.
 DATA="${VIDSHEET_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/vidsheet}"
-if [ -w "$SRC/engine" ] 2>/dev/null; then
-  WORK="$SRC"
-else
+if [ -n "${VIDSHEET_SRC:-}" ]; then
   WORK="$DATA"
+else
+  WORK="$SRC"
 fi
 
 ENGINE_PORT="${ENGINE_PORT:-8000}"
