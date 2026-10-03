@@ -322,8 +322,14 @@ def _octave_transpose(lo: int, hi: int) -> int:
         cost = abs(nlo - 21) + abs(108 - nhi)
         if cost < best_cost:
             best_cost, best_k = cost, k
-    if best_cost == 1e18:  # board wider than 88 keys shouldn't happen; clamp low
-        best_k = round((21 - lo) / 12.0)
+    if best_cost == 1e18:
+        # Board wider than 88 keys (a mis-detection): no whole-octave shift fits
+        # both ends inside 21..108. Centre the board on the valid range rather
+        # than anchoring the low end, which otherwise leaves the top lane past
+        # 108 - and, on a badly over-wide board, past 127, where it becomes an
+        # illegal MIDI note that crashes the exporter.
+        mid = (lo + hi) / 2.0
+        best_k = round((64.5 - mid) / 12.0)
     return best_k * 12
 
 
