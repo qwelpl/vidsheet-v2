@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import subprocess
 import wave
+from typing import Optional
 
 import numpy as np
 
@@ -96,12 +97,25 @@ def drop_unsupported_short(notes: list[NoteEvent], onsets: np.ndarray,
 
 
 def snap_onsets(notes: list[NoteEvent], onsets: np.ndarray,
-                tol: float = 0.06) -> int:
+                tol: Optional[float] = None) -> int:
     """Snap each note's onset to the nearest audio attack within ``tol`` seconds,
-    preserving duration. Returns how many notes were refined (§10, §18)."""
+    preserving duration. Returns how many notes were refined (§10, §18).
+
+    The visual onset (key-light threshold crossing or bar edge) jitters by a
+    couple of frames, so a fixed 60 ms window left most notes unsnapped and
+    smeared chords - the main cause of the two hands sounding out of time. The
+    audio attack is accurate, so widen the window to catch that jitter; it is
+    derived from the song's own note spacing (clamped 60-110 ms) and kept below
+    half the median inter-onset interval so a note never snaps to a neighbour."""
     if onsets.size == 0 or not notes:
         return 0
     onsets = np.sort(onsets)
+    if tol is None:
+        if onsets.size >= 3:
+            median_ioi = float(np.median(np.diff(onsets)))
+            tol = float(np.clip(0.45 * median_ioi, 0.06, 0.11))
+        else:
+            tol = 0.09
     refined = 0
     # A key cannot sound twice at the same instant, so at most one note of a given
     # pitch may snap to any one attack. The audio detector blurs a rapid same-key
