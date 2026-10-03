@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { readSession, SESSION_COOKIE } from "@/lib/session";
 
 // Paths that stay reachable without a session.
-const PUBLIC = ["/login", "/terms", "/api/auth/"];
+const PUBLIC = ["/login", "/terms", "/api/auth/", "/api/health"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
