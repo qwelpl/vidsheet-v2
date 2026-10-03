@@ -150,13 +150,20 @@ def download(url: str, out_dir: str) -> tuple[str, str]:
     import os
     tmpl = os.path.join(out_dir, "%(id)s.%(ext)s")
     # bv*+ba => best video + best audio, prefer height then fps, no re-encode.
+    # YouTube needs a JS runtime to decode the nsig throttling signature; without
+    # one the media URLs 403. Try deno (yt-dlp default) then node.
     cmd = [
-        ytdlp, "-f", "bv*[height<=2160]+ba/b", "--merge-output-format", "mp4",
+        ytdlp, "--js-runtimes", "deno,node",
+        "-f", "bv*[height<=2160]+ba/b", "--merge-output-format", "mp4",
         "-S", "res,fps,vcodec", "--no-playlist", "-o", tmpl,
         "--print", "after_move:filepath", "--print", "after_move:title",
         "--no-simulate", url,
     ]
-    out = subprocess.check_output(cmd, text=True).strip().splitlines()
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        tail = (res.stderr or res.stdout or "").strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"yt-dlp failed (exit {res.returncode}): {tail[0]}")
+    out = res.stdout.strip().splitlines()
     path = out[0]
     title = out[1] if len(out) > 1 else ""
     return path, title
