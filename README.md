@@ -39,17 +39,28 @@ note-for-note exact (F1 = 1.0, onset error â‰ˆ 7 ms at 60 fps, duration error â‰
 
 ## Install
 
+**macOS / Linux (Homebrew):**
+
 ```bash
 brew install qwelpl/vidsheet/vidsheet
 ```
 
-This pulls the dependencies (`ffmpeg`, `node`, `python@3.12`, `yt-dlp`) and adds
-a `vidsheet` command. On first run it copies itself into `~/.local/share/vidsheet`
-and builds the Python venv + web deps there (needs internet and a few hundred MB).
+**Windows (Scoop):**
 
-From a clone instead? `git clone` then run `./vidsheet` from the repo (optionally
-`./vidsheet install` to symlink it onto your PATH). Needs `ffmpeg`, `ffprobe`,
-`yt-dlp`, Python 3.12+, Node 20+.
+```powershell
+scoop bucket add vidsheet https://github.com/qwelpl/scoop-vidsheet
+scoop install vidsheet
+```
+
+Either way the package manager pulls the dependencies (`ffmpeg`, `node`,
+`python`, `yt-dlp`) and adds a `vidsheet` command. On first run it copies itself
+into a per-user data dir (`~/.local/share/vidsheet`, or `%LOCALAPPDATA%\vidsheet`
+on Windows) and builds the Python venv + web deps there - needs internet and a
+few hundred MB.
+
+From a clone instead? `git clone`, then run `./vidsheet` (macOS/Linux) or
+`.\vidsheet.ps1` (Windows) from the repo. Needs `ffmpeg`, `ffprobe`, `yt-dlp`,
+Python 3.12+, Node 20+.
 
 ## Running
 
