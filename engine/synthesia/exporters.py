@@ -39,9 +39,15 @@ def write_midi(path: str, notes: list[NoteEvent], tempo: TempoAnalysis,
     # collect events: (tick, priority, message)
     events: list[tuple[int, int, "mido.Message"]] = []
     for n in notes:
+        # MIDI data bytes are 0..127. A real piano note always is, but a bad
+        # keyboard-geometry detection can hand us a lane pitch outside that range;
+        # skip it rather than letting mido abort the whole export.
+        if not (0 <= n.midi <= 127):
+            continue
         ch = 0 if n.hand == Hand.LEFT else 1
+        vel = int(min(127, max(0, n.velocity)))
         events.append((sec_to_tick(n.start), 1,
-                       mido.Message("note_on", note=n.midi, velocity=n.velocity, channel=ch)))
+                       mido.Message("note_on", note=n.midi, velocity=vel, channel=ch)))
         events.append((sec_to_tick(n.end), 0,
                        mido.Message("note_off", note=n.midi, velocity=0, channel=ch)))
     if pedal_events:
