@@ -1,15 +1,9 @@
 // Backend client + reconstruction data types.
 
-// Always the Render-hosted engine (see render.yaml) - including local dev, so a
-// stray local engine on :8000 can never serve requests. Override only to point
-// at another remote engine; a localhost value is ignored to keep runs off this
-// machine.
-const ENGINE = "https://reprise-engine.onrender.com";
-const override = process.env.NEXT_PUBLIC_API;
-export const API =
-  override && !/^https?:\/\/(localhost|127\.0\.0\.1)/i.test(override)
-    ? override
-    : ENGINE;
+// The engine runs locally alongside the web UI (started together by ./vidsheet),
+// which keeps YouTube downloads on the user's residential IP. Defaults to the
+// local engine on :8000; NEXT_PUBLIC_API can point at another engine if needed.
+export const API = process.env.NEXT_PUBLIC_API || "http://localhost:8000";
 
 export type Hand = "left" | "right" | "unknown";
 

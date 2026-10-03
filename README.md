@@ -42,19 +42,20 @@ note-for-note exact (F1 = 1.0, onset error â‰ˆ 7 ms at 60 fps, duration error â‰
 Requires `ffmpeg`, `ffprobe`, `yt-dlp` on PATH, Python 3.12+, Node 20+.
 
 ```bash
-# 1. engine + API
-cd engine
-python3.12 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-./.venv/bin/python -m uvicorn server:app --port 8000
-
-# 2. web UI (separate shell)
-cd web
-npm install
-npm run dev            # http://localhost:3000  (or next free port)
+./vidsheet
 ```
+
+This bootstraps the engine venv and web deps on first run, starts the engine
+(`:8000`) and web UI (`:3000`) together, and opens the app in your browser.
+Running locally keeps YouTube downloads on your own residential IP, which
+avoids the datacenter-IP block that cloud hosts hit.
 
 Open the UI, paste a YouTube URL / upload a video / click **Run demo**, then
 **Analyze**.
+
+Prefer to start the two processes by hand? The engine is just
+`./.venv/bin/python -m uvicorn server:app --port 8000` in `engine/` and
+`npm run dev` in `web/`.
 
 ### CLI (no server)
 
