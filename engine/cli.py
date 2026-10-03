@@ -1,6 +1,6 @@
 """Command-line runner for the reconstruction engine.
 
-    python cli.py analyze <video> [--preset maximum] [--out DIR]
+    python cli.py analyze <video|url> [--preset maximum] [--out DIR]
     python cli.py demo   [--out DIR]     # generate + analyze a synthetic clip
 """
 from __future__ import annotations
@@ -42,8 +42,14 @@ def _export(result, out_dir, truth=None):
 
 
 def cmd_analyze(args):
+    video = args.video
+    if video.startswith(("http://", "https://")):
+        tmp = tempfile.mkdtemp()
+        sys.stderr.write(f"Downloading {video} ...\n")
+        video, title = videoio.download(video, tmp)
+        sys.stderr.write(f"Downloaded: {title or video}\n")
     opts = Options.for_preset(args.preset)
-    result = analyze(args.video, opts, _progress)
+    result = analyze(video, opts, _progress)
     _export(result, args.out)
 
 
