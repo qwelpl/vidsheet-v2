@@ -1,11 +1,15 @@
 // Backend client + reconstruction data types.
 
-// Production falls back to the Render-hosted engine (see render.yaml).
+// Always the Render-hosted engine (see render.yaml) - including local dev, so a
+// stray local engine on :8000 can never serve requests. Override only to point
+// at another remote engine; a localhost value is ignored to keep runs off this
+// machine.
+const ENGINE = "https://reprise-engine.onrender.com";
+const override = process.env.NEXT_PUBLIC_API;
 export const API =
-  process.env.NEXT_PUBLIC_API ||
-  (process.env.NODE_ENV === "production"
-    ? "https://reprise-engine.onrender.com"
-    : "http://localhost:8000");
+  override && !/^https?:\/\/(localhost|127\.0\.0\.1)/i.test(override)
+    ? override
+    : ENGINE;
 
 export type Hand = "left" | "right" | "unknown";
 
