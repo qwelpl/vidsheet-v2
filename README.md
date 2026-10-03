@@ -1,6 +1,6 @@
-# Reprise - Synthesia Reconstruction Engine
+# VidSheet - Synthesia Reconstruction Engine
 
-Reprise is a forensic reverse-compiler for Synthesia-style piano-roll videos. It
+VidSheet is a forensic reverse-compiler for Synthesia-style piano-roll videos. It
 treats the **video as ground truth** and recovers the underlying performance - 
 every note, exact pitch/octave, sub-frame onset and release, chords, repeats,
 hands, dynamics, tempo - using deterministic computer vision. Every reconstructed
@@ -76,7 +76,7 @@ the regression guard against silent accuracy drops (§65, §66).
 
 ## Accuracy honesty
 
-Reprise never claims literal 100% accuracy unless compared against known
+VidSheet never claims literal 100% accuracy unless compared against known
 ground-truth note data. It reports measured statistics - visual agreement,
 per-field confidence, notes needing review - and flags every uncertain event for
 human correction rather than hiding it.
