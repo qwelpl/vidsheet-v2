@@ -413,6 +413,91 @@ def align_chords(notes: list[NoteEvent], onsets=None, window: float = 0.033) -> 
     return moved
 
 
+def consolidate_durations(notes: list[NoteEvent], rel_tol: float = 0.1,
+                          min_members: int = 4) -> int:
+    """Make notes of the same real length read as the same duration (§20).
+
+    Key-light length jitters ~1 frame and a vivid vs a pale colour differs a few
+    ms, so identical notes come out with slightly different durations - which the
+    two hands expose as a ragged, 'off' sound. Rather than force a tempo grid
+    (which would corrupt a note that genuinely isn't a grid length), cluster the
+    OBSERVED durations and snap each note to its cluster's representative value,
+    but only when it is already within ``rel_tol`` of that value (jitter removal,
+    never a large move). Data-driven, so it leaves one-off lengths untouched."""
+    import numpy as _np
+    if len(notes) < 2 * min_members:
+        return 0
+    durs = sorted(max(1e-4, n.end - n.start) for n in notes)
+    # agglomerate durations that sit within rel_tol of the growing cluster
+    clusters: list[list[float]] = [[durs[0]]]
+    for d in durs[1:]:
+        if d <= clusters[-1][0] * (1.0 + rel_tol):
+            clusters[-1].append(d)
+        else:
+            clusters.append([d])
+    centers = [float(_np.median(c)) for c in clusters if len(c) >= min_members]
+    if not centers:
+        return 0
+    centers_arr = _np.array(centers)
+    moved = 0
+    for n in notes:
+        d = n.end - n.start
+        ci = int(_np.argmin(_np.abs(centers_arr - d)))
+        c = centers[ci]
+        if abs(c - d) <= rel_tol * c and abs(c - d) > 1e-4:
+            n.end = n.start + c
+            n.duration_confidence = min(1.0, max(n.duration_confidence, 0.85))
+            moved += 1
+    return moved
+
+
+def align_releases(notes: list[NoteEvent], window: float = 0.03,
+                   min_dur: float = 0.02) -> int:
+    """Snap near-simultaneous note releases to one shared end (§10).
+
+    Like onset chord-alignment but for the note end: a chord - or the two hands -
+    meant to lift together is detected a frame or so apart, and a vivid vs a pale
+    key colour fades out at slightly different rates, so the releases drift a few
+    milliseconds and flam on playback. Ends falling inside a tight ``window`` are
+    moved to the group's median end. A note is never shortened below ``min_dur``
+    or past its own onset; the onset itself is untouched. Returns notes moved."""
+    import numpy as _np
+    if len(notes) < 2:
+        return 0
+    order = sorted(range(len(notes)), key=lambda k: notes[k].end)
+    moved = 0
+    grp: list[int] = []
+    anchor = None
+
+    def _flush(g):
+        nonlocal moved
+        if len(g) < 2:
+            return
+        target = float(_np.median([notes[k].end for k in g]))
+        for k in g:
+            n = notes[k]
+            if abs(n.end - target) <= 1e-4:
+                continue
+            if target - n.start < min_dur:   # don't invert / over-shorten
+                continue
+            n.end = target
+            n.duration_confidence = min(1.0, max(n.duration_confidence, 0.8))
+            moved += 1
+
+    for k in order:
+        e = notes[k].end
+        if anchor is None or e - anchor <= window:
+            if anchor is None:
+                anchor = e
+            grp.append(k)
+        else:
+            _flush(grp)
+            grp = [k]
+            anchor = e
+    _flush(grp)
+    return moved
+
+
 def resolve_same_pitch_overlaps(notes: list[NoteEvent], drop_min: float = 0.022,
                                 eps: float = 1e-3) -> int:
     """Trim overlaps between consecutive notes of the SAME pitch (§12).

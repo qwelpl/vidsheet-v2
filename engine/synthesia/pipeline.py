@@ -203,11 +203,17 @@ def analyze(video_path: str, opts: Options,
 
     # align notes struck together (chords / both hands on a beat) so tiny
     # per-lane frame skew doesn't read as the hands being out of sync (§10)
-    from .events import align_chords, resolve_same_pitch_overlaps
+    from .events import align_chords, align_releases, resolve_same_pitch_overlaps
     aligned = align_chords(notes, audio_onsets)
     if aligned:
         prog({"stage": "audio", "message": f"Aligned {aligned} simultaneous onsets",
               "progress": 0.85})
+    # releases jitter a frame and differ between a vivid and a pale colour, so
+    # notes meant to lift together flam; snap near-simultaneous ends together
+    align_releases(notes)
+    # de-jitter durations so equal-length notes read as the same length
+    from .events import consolidate_durations
+    consolidate_durations(notes)
     # a key can't sound twice at once: trim/drop any same-pitch overlaps that
     # timing nudges introduced, keeping genuine repeats distinct (§12)
     resolve_same_pitch_overlaps(notes)

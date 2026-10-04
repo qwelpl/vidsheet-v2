@@ -211,12 +211,12 @@ def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames,
             # attack is too quiet to register a global audio onset. A steadily
             # held key has a flat envelope and is never split just because some
             # OTHER note attacked during it (§12).
+            # Repeats are split ONLY from this key's own illumination envelope.
+            # Audio onsets are unpitched, so in polyphonic music a melody attack
+            # over a held bass/chord note would wrongly split the held note into
+            # phantom repeats - the dominant error on busy notes-over-video. The
+            # envelope trough is the only evidence specific to this key.
             splits = _restrike_times(fill, times, i, last_lit, frame_dt, min_frames)
-            # Corroborating audio attacks that land on a milder dip also split, so
-            # a re-strike the video only barely shows is still caught.
-            for t in onsets:
-                if t_on + 0.12 < t < t_off - 0.03 and _restruck(fill, times, t):
-                    splits.append(float(t))
             splits = _dedupe(sorted(splits), frame_dt * max(min_frames, 2))
             bounds = [t_on] + splits + [t_off]
             for a, b in zip(bounds, bounds[1:]):
