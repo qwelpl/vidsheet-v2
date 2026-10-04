@@ -19,6 +19,24 @@ const WHITE_KEYS = [
 
 const DISP_W = 680;
 
+const NOTE_IDX: { [k: string]: number } = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+function nameToMidi(name: string): number {
+  const m = name.match(/^([A-G])(#?)(\d)$/);
+  if (!m) return 60;
+  return (parseInt(m[3]) + 1) * 12 + NOTE_IDX[m[1]] + (m[2] ? 1 : 0);
+}
+const isBlack = (midi: number) => [1, 3, 6, 8, 10].includes(((midi % 12) + 12) % 12);
+
+// White-key centre x-positions (in frame coords) for the current calibration,
+// matching the engine's even layout between the two edges.
+function whiteCenters(firstKey: string, lastKey: string, left: number, right: number): number[] {
+  const lo = nameToMidi(firstKey), hi = nameToMidi(lastKey);
+  const whites: number[] = [];
+  for (let m = lo; m <= hi; m++) if (!isBlack(m)) whites.push(m);
+  const w = (right - left) / Math.max(1, whites.length);
+  return whites.map((_, i) => left + (i + 0.5) * w);
+}
+
 export default function Calibrate({
   prep, onJob, onCancel,
 }: {
@@ -106,6 +124,10 @@ export default function Calibrate({
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={frameUrl(job.id)} alt="calibration frame"
                   style={{ width: DISP_W, height: dispH, display: "block" }} />
+                {override && whiteCenters(firstKey, lastKey, left, right).map((cx, i) => (
+                  <div key={i} style={{ position: "absolute", left: cx * scale, top: strike * scale,
+                    width: 1, height: (bottom - strike) * scale, background: "rgba(255,230,0,0.65)" }} />
+                ))}
                 <div style={{ position: "absolute", left: left * scale, top: 0, width: 2, height: dispH, background: "#38e4ff" }} />
                 <div style={{ position: "absolute", left: right * scale, top: 0, width: 2, height: dispH, background: "#38e4ff" }} />
                 <div style={{ position: "absolute", left: 0, top: strike * scale, width: DISP_W, height: 2, background: "#ff4d4d" }} />
