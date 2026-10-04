@@ -21,8 +21,12 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
+import cv2
+
 from synthesia import analyze, Options
 from synthesia import videoio
+from synthesia import keyboard as kb
+from synthesia import pipeline as _pipeline
 from synthesia.exporters import (write_midi, write_csv, write_musicxml,
                                  write_json)
 
@@ -50,6 +54,11 @@ class Job:
     preset: str = "balanced"
     title: str = ""
     created: float = field(default_factory=time.time)
+    kind: str = "analyze"           # analyze | prepare
+    frame_path: Optional[str] = None  # calibration frame (prepare jobs)
+    geometry: Optional[dict] = None   # auto-detected geometry guess (prepare)
+    detector: str = "auto"          # auto | bars | keylight
+    manual: Optional[dict] = None   # manual keyboard calibration params
 
     def public(self) -> dict:
         return {
@@ -57,6 +66,9 @@ class Job:
             "message": self.message, "stages": self.stages[-30:],
             "error": self.error, "title": self.title,
             "has_result": self.result is not None,
+            "kind": self.kind,
+            "has_frame": self.frame_path is not None,
+            "geometry": self.geometry,
         }
 
 
@@ -69,18 +81,64 @@ def _job_dir(job_id: str) -> str:
     return d
 
 
+def _ensure_source(job: Job, source: str, is_url: bool) -> None:
+    """Make job.video_path point at a local file, downloading if needed. A job
+    reusing a prepare job's download already has video_path set - skip."""
+    if job.video_path and os.path.exists(job.video_path):
+        return
+    d = _job_dir(job.id)
+    if is_url:
+        job.message = "Downloading source"
+        path, title = videoio.download(source, d)
+        job.video_path = path
+        job.title = job.title or title or "YouTube source"
+    else:
+        job.video_path = source
+        job.title = job.title or os.path.basename(source)
+
+
+def _run_prepare(job: Job, source: str, is_url: bool):
+    """Download/locate the source, grab a representative frame and an auto
+    keyboard-geometry guess for the calibration UI (no full analysis)."""
+    try:
+        job.status = "running"
+        job.message = "Fetching source"
+        _ensure_source(job, source, is_url)
+        meta = videoio.probe(job.video_path)
+        scale_w, _ = _pipeline._scale_meta(meta, Options.for_preset(job.preset).analysis_width)
+        frames = _pipeline._sample_frames(meta, scale_w, n=40)
+        median = kb.temporal_median(frames)
+        geom = kb.build_geometry(median)
+        d = _job_dir(job.id)
+        job.frame_path = os.path.join(d, "frame.png")
+        cv2.imwrite(job.frame_path, median)
+        g = geom.to_dict()
+        # expose the frame size the overlay is drawn against + a keyboard x-extent
+        # guess so the UI can seed the edge handles.
+        gray = cv2.cvtColor(median, cv2.COLOR_BGR2GRAY)
+        kt, kbb = int(geom.keyboard_top), int(geom.keyboard_bottom)
+        band = gray[max(0, kbb - max(3, (kbb - kt) // 3)):kbb, :]
+        col = band.mean(axis=0)
+        bright = (col > col.max() * 0.6).nonzero()[0]
+        g["frame_width"] = int(median.shape[1])
+        g["frame_height"] = int(median.shape[0])
+        g["left_edge"] = int(bright.min()) if bright.size else 0
+        g["right_edge"] = int(bright.max()) if bright.size else int(median.shape[1])
+        job.geometry = g
+        job.status = "done"
+        job.progress = 1.0
+        job.message = "Ready to calibrate"
+    except Exception as e:
+        job.status = "error"
+        job.error = f"{e}"
+        traceback.print_exc()
+
+
 def _run_job(job: Job, source: str, is_url: bool):
     try:
         job.status = "running"
         d = _job_dir(job.id)
-        if is_url:
-            job.message = "Downloading source"
-            path, title = videoio.download(source, d)
-            job.video_path = path
-            job.title = title or "YouTube source"
-        else:
-            job.video_path = source
-            job.title = job.title or os.path.basename(source)
+        _ensure_source(job, source, is_url)
 
         def progress(ev: dict):
             job.stages.append(ev)
@@ -88,6 +146,15 @@ def _run_job(job: Job, source: str, is_url: bool):
             job.message = ev.get("message", job.message)
 
         opts = Options.for_preset(job.preset)
+        opts.detector = job.detector or "auto"
+        if job.manual:
+            m = job.manual
+            opts.geometry_manual = kb.manual_geometry(
+                int(m["frame_width"]), int(m["frame_height"]),
+                float(m["left"]), float(m["right"]),
+                float(m["strike_y"]), float(m["bottom"]),
+                str(m["first_key"]), str(m["last_key"]),
+            )
         result = analyze(job.video_path, opts, progress)
         # persist exports
         write_midi(os.path.join(d, "reconstruction.mid"), result.notes, result.tempo)
@@ -108,7 +175,8 @@ def _run_job(job: Job, source: str, is_url: bool):
 
 def _start(job: Job, source: str, is_url: bool):
     JOBS[job.id] = job
-    t = threading.Thread(target=_run_job, args=(job, source, is_url), daemon=True)
+    target = _run_prepare if job.kind == "prepare" else _run_job
+    t = threading.Thread(target=target, args=(job, source, is_url), daemon=True)
     t.start()
 
 
@@ -127,6 +195,50 @@ async def analyze_upload(file: UploadFile = File(...), preset: str = Form("balan
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
     _start(job, dest, is_url=False)
+    return job.public()
+
+
+# --- calibration flow: prepare -> (user calibrates) -> analyze prepared ------
+
+@app.post("/api/prepare/youtube")
+def prepare_youtube(url: str = Form(...), preset: str = Form("balanced")):
+    job = Job(id=uuid.uuid4().hex[:12], preset=preset, kind="prepare")
+    _start(job, url, is_url=True)
+    return job.public()
+
+
+@app.post("/api/prepare/upload")
+async def prepare_upload(file: UploadFile = File(...), preset: str = Form("balanced")):
+    job = Job(id=uuid.uuid4().hex[:12], preset=preset, kind="prepare",
+              title=file.filename or "upload")
+    d = _job_dir(job.id)
+    dest = os.path.join(d, "source" + os.path.splitext(file.filename or ".mp4")[1])
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    _start(job, dest, is_url=False)
+    return job.public()
+
+
+@app.get("/api/jobs/{job_id}/frame")
+def job_frame(job_id: str):
+    job = JOBS.get(job_id)
+    if not job or not job.frame_path or not os.path.exists(job.frame_path):
+        raise HTTPException(404, "no frame")
+    return FileResponse(job.frame_path, media_type="image/png")
+
+
+@app.post("/api/analyze/prepared")
+async def analyze_prepared(request: Request):
+    """Run analysis reusing a prepare job's downloaded source, with an optional
+    manual keyboard calibration and a detector choice."""
+    body = await request.json()
+    prep = JOBS.get(body.get("prepare_id", ""))
+    if not prep or prep.kind != "prepare" or not prep.video_path:
+        raise HTTPException(404, "unknown or unready prepare job")
+    job = Job(id=uuid.uuid4().hex[:12], preset=prep.preset, title=prep.title,
+              detector=body.get("detector", "auto"), manual=body.get("manual"),
+              video_path=prep.video_path)
+    _start(job, prep.video_path, is_url=False)
     return job.public()
 
 
