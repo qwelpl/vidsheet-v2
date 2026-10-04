@@ -138,7 +138,7 @@ cmd_launch() {
   local api=$!
   (cd "$WORK/web" && NEXT_PUBLIC_API="http://localhost:${ENGINE_PORT}" npm run dev -- --port "$WEB_PORT") &
   local web=$!
-  trap 'kill $api $web 2>/dev/null || true' EXIT INT TERM
+  trap 'kill ${api:-} ${web:-} 2>/dev/null || true' EXIT INT TERM
 
   # Wait for the engine before creating a job / opening the browser.
   local ready=0 _
