@@ -124,14 +124,19 @@ export default function Calibrate({
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={frameUrl(job.id)} alt="calibration frame"
                   style={{ width: DISP_W, height: dispH, display: "block" }} />
+                {/* key lanes inside the box, to align against the real keys */}
                 {override && whiteCenters(firstKey, lastKey, left, right).map((cx, i) => (
                   <div key={i} style={{ position: "absolute", left: cx * scale, top: strike * scale,
-                    width: 1, height: (bottom - strike) * scale, background: "rgba(255,230,0,0.65)" }} />
+                    width: 1, height: (bottom - strike) * scale, background: "rgba(255,230,0,0.7)" }} />
                 ))}
-                <div style={{ position: "absolute", left: left * scale, top: 0, width: 2, height: dispH, background: "#38e4ff" }} />
-                <div style={{ position: "absolute", left: right * scale, top: 0, width: 2, height: dispH, background: "#38e4ff" }} />
-                <div style={{ position: "absolute", left: 0, top: strike * scale, width: DISP_W, height: 2, background: "#ff4d4d" }} />
-                <div style={{ position: "absolute", left: 0, top: bottom * scale, width: DISP_W, height: 2, background: "#ffb020" }} />
+                {/* keyboard box: left/right edges + strike (top) + bottom */}
+                <div style={{ position: "absolute",
+                  left: left * scale, top: strike * scale,
+                  width: Math.max(0, (right - left) * scale), height: Math.max(0, (bottom - strike) * scale),
+                  border: "2px solid #38e4ff", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }} />
+                {/* strike line highlighted (where notes are struck) */}
+                <div style={{ position: "absolute", left: left * scale, top: strike * scale,
+                  width: Math.max(0, (right - left) * scale), height: 2, background: "#ff4d4d" }} />
               </div>
 
               <div style={{ display: "flex", gap: 8, margin: "14px 0 6px", alignItems: "center" }}>
