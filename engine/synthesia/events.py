@@ -321,7 +321,13 @@ def cleanup_fragments(notes: list[NoteEvent], merge_gap: float = 0.045,
                 overlap = n.start < p.end and not is_repeat
                 sliver = (n.start - p.end < merge_gap) and \
                     (min(n.duration, p.duration) < 0.05) and not is_repeat
-                if overlap or sliver:
+                # Two full-length notes butted exactly end-to-start are one
+                # continuous note the detector over-split: a genuine repeat needs
+                # the key to visibly go dark, i.e. a real gap of at least a frame.
+                # A sub-frame gap (<16 ms) means the illumination never broke, so
+                # fuse them (unless flagged a true re-strike).
+                continuous = (-0.5 < n.start - p.end < 0.016) and not is_repeat
+                if overlap or sliver or continuous:
                     if n.end > p.end:
                         p.end = n.end
                     p.detection_confidence = max(p.detection_confidence,
