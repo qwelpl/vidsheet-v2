@@ -4,6 +4,7 @@ import { JobStatus, Project, getJob, getResult } from "@/lib/api";
 import Landing from "./components/Landing";
 import Progress from "./components/Progress";
 import Workspace from "./components/Workspace";
+import Calibrate from "./components/Calibrate";
 
 export default function Page() {
   const [job, setJob] = useState<JobStatus | null>(null);
@@ -25,7 +26,8 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
-    if (!job || job.status === "done" || job.status === "error") return;
+    // prepare jobs drive their own polling inside Calibrate
+    if (!job || job.kind === "prepare" || job.status === "done" || job.status === "error") return;
     poll.current = setInterval(async () => {
       try {
         const s = await getJob(job.id);
@@ -51,6 +53,8 @@ export default function Page() {
     <>
       {!job ? (
         <Landing onJob={setJob} />
+      ) : job.kind === "prepare" ? (
+        <Calibrate prep={job} onJob={setJob} onCancel={reset} />
       ) : job.status === "done" && project ? (
         <Workspace jobId={job.id} project={project} onExit={reset} />
       ) : (

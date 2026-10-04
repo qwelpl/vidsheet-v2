@@ -108,6 +108,18 @@ export interface Project {
   };
 }
 
+export interface PrepGeometry {
+  frame_width: number;
+  frame_height: number;
+  left_edge: number;
+  right_edge: number;
+  strike_y: number;
+  keyboard_bottom: number;
+  low_name: string;
+  high_name: string;
+  confidence: number;
+}
+
 export interface JobStatus {
   id: string;
   status: "queued" | "running" | "done" | "error";
@@ -117,6 +129,20 @@ export interface JobStatus {
   error: string | null;
   title: string;
   has_result: boolean;
+  kind?: "analyze" | "prepare";
+  has_frame?: boolean;
+  geometry?: PrepGeometry | null;
+}
+
+export interface ManualGeometry {
+  frame_width: number;
+  frame_height: number;
+  left: number;
+  right: number;
+  strike_y: number;
+  bottom: number;
+  first_key: string;
+  last_key: string;
 }
 
 async function post(path: string, body: FormData): Promise<JobStatus> {
@@ -143,6 +169,36 @@ export function startDemo(preset = "maximum") {
   const f = new FormData();
   f.set("preset", preset);
   return post("/api/demo", f);
+}
+
+export function prepareYoutube(url: string, preset: string) {
+  const f = new FormData();
+  f.set("url", url);
+  f.set("preset", preset);
+  return post("/api/prepare/youtube", f);
+}
+
+export function prepareUpload(file: File, preset: string) {
+  const f = new FormData();
+  f.set("file", file);
+  f.set("preset", preset);
+  return post("/api/prepare/upload", f);
+}
+
+export const frameUrl = (id: string) => `${API}/api/jobs/${id}/frame`;
+
+export async function analyzePrepared(
+  prepareId: string,
+  detector: "auto" | "bars" | "keylight",
+  manual: ManualGeometry | null,
+): Promise<JobStatus> {
+  const r = await fetch(`${API}/api/analyze/prepared`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prepare_id: prepareId, detector, manual }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
 }
 
 export async function getJob(id: string): Promise<JobStatus> {

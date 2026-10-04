@@ -1,6 +1,6 @@
 "use client";
 import { useRef, useState } from "react";
-import { startYoutube, startUpload, startDemo, JobStatus } from "@/lib/api";
+import { prepareYoutube, prepareUpload, startDemo, JobStatus } from "@/lib/api";
 import NoteRain from "./NoteRain";
 import ConfirmDialog from "./ConfirmDialog";
 
@@ -74,12 +74,12 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
               placeholder="https://www.youtube.com/watch?v=…"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && url && !busy && requestQueue(() => startYoutube(url, preset))}
+              onKeyDown={(e) => e.key === "Enter" && url && !busy && requestQueue(() => prepareYoutube(url, preset))}
             />
             <button
               className="btn btn-primary"
               disabled={!url || busy}
-              onClick={() => requestQueue(() => startYoutube(url, preset))}
+              onClick={() => requestQueue(() => prepareYoutube(url, preset))}
             >
               Analyze
             </button>
@@ -105,7 +105,7 @@ export default function Landing({ onJob }: { onJob: (j: JobStatus) => void }) {
               hidden
               onChange={(e) => {
                 const f = e.target.files?.[0];
-                if (f) requestQueue(() => startUpload(f, preset));
+                if (f) requestQueue(() => prepareUpload(f, preset));
                 e.target.value = "";
               }}
             />
