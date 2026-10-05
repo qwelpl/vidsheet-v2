@@ -545,6 +545,22 @@ def _hit_level(hist: dict, strike: float) -> float:
                 peaks.append(float(b[k]))
     if len(peaks) < 20:
         return strike
+    peaks = np.asarray(peaks)
+    # The visible roll is cut a few px above the keys, so a bar whose true edge
+    # has passed the strike clamps at that bottom row: a tall spike of leading-edge
+    # maxima piles at this ceiling. On a CLEAN render bars descend monotonically
+    # and pile ONLY there, so the clamp IS the hit line. On composited / noisy
+    # video a hit-flash line occludes each bar a few px *above* the clamp, leaving
+    # a second, lower population of edge maxima - and there the clamp marks "past
+    # the strike", not where notes are struck. Taking a high percentile of all
+    # peaks then pins the hit level onto the clamp and collapses the occupancy band
+    # to a sliver one pixel above the real crossings, dropping almost every onset.
+    # So when a substantial below-ceiling population exists, anchor the hit level on
+    # it instead of the clamp (§34, §35).
+    ceiling = float(peaks.max())
+    core = peaks[peaks < ceiling - 2.0]
+    if core.size >= 0.3 * peaks.size:
+        return float(np.percentile(core, 90))
     # a high percentile pins to the true bar-peak level (the consistent apex where
     # bars top out), robust to lower spurious peaks from hit-flash glow
     return float(np.percentile(peaks, 90))
