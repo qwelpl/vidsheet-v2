@@ -158,6 +158,162 @@ def detect_keyboard_band(gray: np.ndarray) -> tuple[int, int]:
     return top, bottom
 
 
+def _keyboard_extent(lower: np.ndarray) -> tuple[int, int]:
+    """Horizontal [left, right] span of the keyboard body in a white-key strip.
+
+    The white keys are a bright contiguous block; letterbox / margins are dark.
+    Returns the first and last column whose brightness clears a mid threshold."""
+    col = lower.mean(axis=0)
+    thr = max(60.0, 0.5 * float(np.percentile(col, 90)))
+    bright = np.where(col >= thr)[0]
+    if len(bright) < 8:
+        return 0, lower.shape[1] - 1
+    return int(bright[0]), int(bright[-1])
+
+
+def _detect_black_centers(gray: np.ndarray, kb_top: int, kb_bottom: int) -> np.ndarray:
+    """Sub-pixel x centres of the black keys, read from the upper keyboard band.
+
+    Black keys are tall, high-contrast dark blocks that survive the temporal
+    median cleanly even when the thin white-key separators below are too faint
+    to find. We threshold the mean-brightness profile of a strip taken over the
+    black-key body and return the centroid of each dark run."""
+    band_h = kb_bottom - kb_top
+    upper = gray[kb_top + int(band_h * 0.12): kb_top + int(band_h * 0.38), :]
+    prof = upper.mean(axis=0)
+    thr = (float(prof.max()) + float(prof.min())) / 2.0
+    mask = prof < thr
+    w = len(mask)
+    min_run = max(3, int(band_h * 0.02))
+    centers = []
+    i = 0
+    while i < w:
+        if mask[i]:
+            j = i
+            while j < w and mask[j]:
+                j += 1
+            if j - i >= min_run:
+                seg = thr - prof[i:j]            # weight by darkness
+                centers.append((np.arange(i, j) * seg).sum() / (seg.sum() + 1e-6))
+            i = j
+        else:
+            i += 1
+    return np.array(centers, dtype=np.float64)
+
+
+# Black-key position within an octave, in white-key units (C == 0):
+# C#=0.5 D#=1.5  F#=3.5 G#=4.5 A#=5.5
+_BLACK_WC_3 = [3.5, 4.5, 5.5]   # F# G# A#  (group of three)
+_BLACK_WC_2 = [0.5, 1.5]        # C# D#     (group of two)
+
+
+def _geometry_from_black_keys(
+    gray: np.ndarray, w: int, h: int, kb_top: int, kb_bottom: int,
+) -> Optional[KeyboardGeometry]:
+    """Geometry anchored on the black keys (§6). Robust where the white-key
+    separators are too faint to detect: the 2-and-3 black-key groups give both
+    the pitch-class phase and, via a linear fit, the exact white-key pitch.
+
+    Returns ``None`` when the black pattern is too sparse or irregular to trust,
+    so the caller can fall back to white-separator detection."""
+    centers = _detect_black_centers(gray, kb_top, kb_bottom)
+    if len(centers) < 5:
+        return None
+    gaps = np.diff(centers)
+    unit = float(np.median(gaps[gaps < np.median(gaps) * 1.3]))
+    if unit <= 0:
+        return None
+    wide = gaps > 1.35 * unit
+
+    # split the black keys into their 2- and 3-key groups at the wide gaps
+    groups: list[list[float]] = []
+    cur = [centers[0]]
+    for k, g in enumerate(gaps):
+        if wide[k]:
+            groups.append(cur)
+            cur = [centers[k + 1]]
+        else:
+            cur.append(centers[k + 1])
+    groups.append(cur)
+    sizes = [len(g) for g in groups]
+    if 3 not in sizes:
+        return None
+
+    # The groups alternate 3,2,3,2,... A group of three is F#G#A#, a group of
+    # two is C#D#. Anchor the alternation on the first full three-group and read
+    # the type of every group from its parity; partial edge groups then follow.
+    anchor = sizes.index(3)
+    types = [3 if (gi - anchor) % 2 == 0 else 2 for gi in range(len(groups))]
+    ocs, oc = [], 0
+    for t in types:
+        ocs.append(oc)
+        if t == 3:          # F#G#A# closes an octave's black keys
+            oc += 1
+
+    xs, wcs = [], []
+    for gi, (grp, t, o) in enumerate(zip(groups, types, ocs)):
+        full = _BLACK_WC_3 if t == 3 else _BLACK_WC_2
+        n = len(grp)
+        if n > len(full):
+            return None                         # impossible group size
+        if n < len(full):
+            sub = full[len(full) - n:] if gi == 0 else full[:n]
+        else:
+            sub = full
+        for cx, wc in zip(grp, sub):
+            xs.append(cx)
+            wcs.append(o * 7 + wc)
+    xs = np.array(xs)
+    wcs = np.array(wcs)
+
+    A = np.vstack([wcs, np.ones_like(wcs)]).T
+    (white_w, intercept), *_ = np.linalg.lstsq(A, xs, rcond=None)
+    if white_w <= 1:
+        return None
+    resid = float(np.sqrt(np.mean((A @ [white_w, intercept] - xs) ** 2)))
+    if resid > 0.30 * white_w:                  # fit too loose to trust
+        return None
+
+    # white keys at integer white-coords that land inside the keyboard body
+    band_h = kb_bottom - kb_top
+    lower = gray[kb_bottom - max(3, band_h // 3): kb_bottom, :]
+    left_edge, right_edge = _keyboard_extent(lower)
+    half = white_w / 2.0
+    i_lo = int(np.floor((left_edge - intercept) / white_w))
+    i_hi = int(np.ceil((right_edge - intercept) / white_w))
+    lanes: dict[int, Lane] = {}
+    base = 60
+    for i in range(i_lo, i_hi + 1):
+        cx = white_w * i + intercept
+        if cx < left_edge - half * 0.5 or cx > right_edge + half * 0.5:
+            continue
+        midi = base + 12 * (i // 7) + _WHITE_SEMITONES[i % 7]
+        lanes[midi] = Lane(midi, float(cx), float(half), False)
+    if len(lanes) < 10:
+        return None
+
+    # black keys between whites a tone apart
+    white_midis = sorted(lanes)
+    for a, b in zip(white_midis, white_midis[1:]):
+        if b - a == 2:
+            bm = a + 1
+            cx = (lanes[a].center + lanes[b].center) / 2.0
+            lanes[bm] = Lane(bm, float(cx), float(white_w * 0.29), True)
+
+    shift = _octave_transpose(min(lanes), max(lanes))
+    if shift:
+        lanes = {m + shift: Lane(m + shift, l.center, l.half_width, l.is_black)
+                 for m, l in lanes.items()}
+    lo_midi, hi_midi = min(lanes), max(lanes)
+    # confidence: tight fit + regular alternation
+    conf = float(np.clip(1.0 - resid / white_w, 0.55, 0.95))
+    return KeyboardGeometry(
+        width=w, height=h,
+        keyboard_top=float(kb_top), keyboard_bottom=float(kb_bottom),
+        lanes=lanes, low_midi=lo_midi, high_midi=hi_midi, confidence=conf,
+    )
+
+
 def _find_white_boundaries(strip: np.ndarray) -> np.ndarray:
     """Given a horizontal strip from the lower (all-white) keyboard region,
     return sub-pixel x positions of the dark separators between white keys."""
@@ -215,6 +371,15 @@ def build_geometry(
 
     if kb_top is None or kb_bottom is None:
         kb_top, kb_bottom = detect_keyboard_band(gray)
+
+    # Black keys are the most reliable landmark (tall, high-contrast blocks),
+    # so anchor on them first. White-key separators are often too faint on a
+    # temporal-median frame to count correctly - under-counting them silently
+    # mis-scales the whole board (§6). Fall back to separator detection only
+    # when the black pattern is too sparse / irregular to fit.
+    black_geo = _geometry_from_black_keys(gray, w, h, kb_top, kb_bottom)
+    if black_geo is not None:
+        return black_geo
 
     band_h = kb_bottom - kb_top
     # lower ~30% of the band is below the black keys -> only white separators
@@ -311,15 +476,20 @@ def _assign_pitches(white_centers, white_hw, gaps, phase) -> dict[int, Lane]:
 
 
 def _octave_transpose(lo: int, hi: int) -> int:
-    """Whole-octave shift bringing [lo, hi] onto the piano (21..108), centred so
-    both ends sit inside range. Preserves pitch classes."""
-    span = hi - lo
+    """Whole-octave shift bringing [lo, hi] onto the piano (21..108).
+
+    Absolute octave can't be read from key geometry alone - only the pitch
+    classes are known - so several whole-octave placements fit inside the piano
+    range. Synthesia tutorials frame the played range around middle C, so we
+    pick the placement whose mid-point sits closest to MIDI 60, breaking ties by
+    how centred it is in 21..108. Preserves pitch classes."""
     best_k, best_cost = 0, 1e18
     for k in range(-10, 11):
         nlo, nhi = lo + k * 12, hi + k * 12
         if nlo < 21 or nhi > 108:
             continue
-        cost = abs(nlo - 21) + abs(108 - nhi)
+        mid = (nlo + nhi) / 2.0
+        cost = abs(mid - 60.0) + 0.01 * (abs(nlo - 21) + abs(108 - nhi))
         if cost < best_cost:
             best_cost, best_k = cost, k
     if best_cost == 1e18:
