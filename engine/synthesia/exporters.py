@@ -243,18 +243,27 @@ def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
         _write_rest(out, per_measure - cursor, staff, divisions)
 
 
-def _dur_type(dur: int, divisions: int) -> str:
-    # standard note value <= dur, measured in divisions-per-quarter units.
-    # The grid is 12 divisions/quarter, whose finest clean value is a sixteenth
-    # (3 divisions); there is no exact 32nd, so a short odd duration (e.g. a
-    # 2-division triplet-sixteenth) reads as a sixteenth rather than a spurious
-    # 32nd flag.
+def _note_value(dur: int, divisions: int) -> tuple[str, int]:
+    """Map a duration (in divisions, 12 per quarter) to a (type, dots) pair so
+    a dotted-eighth/quarter/half prints with its dot instead of a bare note
+    whose <duration> contradicts its <type>. The finest clean value on the grid
+    is a sixteenth; a dot adds half (one dot) or three-quarters (two dots) of
+    the base. A duration that is not a clean dotted value falls back to the
+    plain base type (a residual tie is not modelled)."""
     q = divisions
-    for d, name in ((4 * q, "whole"), (2 * q, "half"), (q, "quarter"),
+    for b, name in ((4 * q, "whole"), (2 * q, "half"), (q, "quarter"),
                     (max(1, q // 2), "eighth"), (max(1, q // 4), "16th")):
-        if dur >= d:
-            return name
-    return "16th"
+        if dur >= b:
+            if dur * 2 == b * 3:      # dotted  (base * 1.5)
+                return name, 1
+            if dur * 4 == b * 7:      # double-dotted (base * 1.75)
+                return name, 2
+            return name, 0
+    return "16th", 0
+
+
+def _dur_type(dur: int, divisions: int) -> str:
+    return _note_value(dur, divisions)[0]
 
 
 def _write_pitch(out, n, dur, staff, divisions, spell, is_chord):
@@ -270,14 +279,18 @@ def _write_pitch(out, n, dur, staff, divisions, spell, is_chord):
     out.write('        </pitch>\n')
     out.write(f'        <duration>{dur}</duration>\n')
     out.write(f'        <voice>{staff}</voice>\n')
-    out.write(f'        <type>{_dur_type(dur, divisions)}</type>\n')
+    typ, dots = _note_value(dur, divisions)
+    out.write(f'        <type>{typ}</type>\n')
+    out.write('        <dot/>\n' * dots)
     out.write(f'        <staff>{staff}</staff>\n')
     out.write('      </note>\n')
 
 
 def _write_rest(out, dur, staff, divisions):
+    typ, dots = _note_value(dur, divisions)
     out.write('      <note>\n        <rest/>\n')
     out.write(f'        <duration>{dur}</duration>\n')
     out.write(f'        <voice>{staff}</voice>\n')
-    out.write(f'        <type>{_dur_type(dur, divisions)}</type>\n')
+    out.write(f'        <type>{typ}</type>\n')
+    out.write('        <dot/>\n' * dots)
     out.write(f'        <staff>{staff}</staff>\n      </note>\n')
