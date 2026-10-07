@@ -109,7 +109,18 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
     per_measure = divisions * beats_per_measure
 
     def _raw_div(t: float) -> int:
-        return int(round((t - phase) / period * divisions))
+        # Rhythmic quantization for notation: snap the beat position to the
+        # nearest eighth / eighth-triplet / sixteenth before mapping to
+        # divisions. Rounding straight to the fine division grid prints onset
+        # jitter as ragged 7/12 + 5/12 values; a plain run of eighths then reads
+        # as a mess instead of even eighth notes. Raw MIDI timing is untouched.
+        beat = (t - phase) / period
+        best = round(beat)
+        for s in (2, 3, 4):           # eighths, triplets, sixteenths per beat
+            q = round(beat * s) / s
+            if abs(beat - q) < abs(beat - best):
+                best = q
+        return int(round(best * divisions))
 
     # Anchor to the first onset's measure so the score doesn't start with a run
     # of empty leading measures (or negative divisions when a note precedes the

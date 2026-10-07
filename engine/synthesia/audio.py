@@ -117,35 +117,40 @@ def snap_onsets(notes: list[NoteEvent], onsets: np.ndarray,
         else:
             tol = 0.09
     refined = 0
-    # A key cannot sound twice at the same instant, so at most one note of a given
-    # pitch may snap to any one attack. The audio detector blurs a rapid same-key
-    # repeat into a single attack; without this guard two visually-distinct
-    # re-strikes both snap to it, collide, and one is later dropped - the repeat
-    # is lost. Earliest note claims the attack; the rest keep their detected time.
-    claimed: set = set()
-    for n in sorted(notes, key=lambda x: x.start):
-        idx = int(np.searchsorted(onsets, n.start))
-        best, bestd = None, tol
-        for j in (idx - 1, idx):
-            if 0 <= j < onsets.size:
-                d = abs(onsets[j] - n.start)
-                if d < bestd:
-                    bestd, best = d, float(onsets[j])
-        if best is None:
-            continue
-        key = (n.midi, round(best, 4))
-        if key in claimed:
-            continue          # a same-pitch note already took this attack
-        claimed.add(key)
-        if abs(best - n.start) > 1e-4:
-            dur = n.duration
-            n.start = best
-            n.end = best + dur
-            n.timing_confidence = min(1.0, max(n.timing_confidence, 0.9))
-            if n.verification.value == "unverified":
-                from .model import VerificationStatus
-                n.verification = VerificationStatus.AUDIO_CONFIRMED
-            refined += 1
+    # Simultaneity window: notes may snap to the SAME attack only if they were
+    # detected within this of each other - i.e. actually struck together as a
+    # chord. Two sequential melody notes (a fast run) can each fall within the
+    # snap window of one shared attack; without this guard they both snap onto
+    # it, collapse to an identical onset, and print as a false chord (e.g. a
+    # melodic 2nd stacked instead of two separate notes). One frame-ish.
+    sim = 0.045
+    orig = {id(n): float(n.start) for n in notes}
+    claimed_pitch: set = set()        # (midi, attack): a key can't double on one attack
+    attack_src: dict = {}             # attack -> earliest detected onset that claimed it
+    for n in sorted(notes, key=lambda x: orig[id(x)]):
+        s0 = orig[id(n)]
+        lo = int(np.searchsorted(onsets, s0 - tol))
+        hi = int(np.searchsorted(onsets, s0 + tol))
+        # nearest candidate attacks first
+        for a in sorted((float(x) for x in onsets[lo:hi]), key=lambda x: abs(x - s0)):
+            if (n.midi, a) in claimed_pitch:
+                continue
+            # joining an already-claimed attack is only valid as a chord when the
+            # two notes were struck together; a run straddling the attack is not
+            if a in attack_src and abs(s0 - attack_src[a]) > sim:
+                continue
+            claimed_pitch.add((n.midi, a))
+            attack_src.setdefault(a, s0)
+            if abs(a - n.start) > 1e-4:
+                dur = n.duration
+                n.start = a
+                n.end = a + dur
+                n.timing_confidence = min(1.0, max(n.timing_confidence, 0.9))
+                if n.verification.value == "unverified":
+                    from .model import VerificationStatus
+                    n.verification = VerificationStatus.AUDIO_CONFIRMED
+                refined += 1
+            break
     notes.sort(key=lambda x: (x.start, x.midi))
     for i, n in enumerate(notes):
         n.id = i + 1
