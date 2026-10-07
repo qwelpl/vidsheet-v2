@@ -101,7 +101,7 @@ def write_musicxml(path: str, notes: list[NoteEvent], tempo: TempoAnalysis) -> N
 
 
 def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
-    divisions = 4  # divisions per quarter (16th resolution)
+    divisions = 12  # divisions per quarter: resolves 16ths (3) and triplets (4)
     period = tempo.beat_period
     phase = tempo.beat_phase
     beats_per_measure, beat_type = tempo.time_signature
@@ -171,13 +171,13 @@ def _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
                       f'<per-minute>{int(round(bpm))}</per-minute></metronome>'
                       f'</direction-type><sound tempo="{int(round(bpm))}"/></direction>\n')
         m0, m1 = m * per_measure, (m + 1) * per_measure
-        _write_staff(out, right, 1, m0, m1, per_measure, to_div, divisions, spell)
+        legato = max(2, divisions // 2)  # absorb trailing gaps below an eighth
+        _write_staff(out, right, 1, m0, m1, per_measure, to_div, divisions, spell,
+                     min_rest_div=legato)
         out.write(f'      <backup><duration>{per_measure}</duration></backup>\n')
-        _write_staff(out, left, 2, m0, m1, per_measure, to_div, divisions, spell)
+        _write_staff(out, left, 2, m0, m1, per_measure, to_div, divisions, spell,
+                     min_rest_div=legato)
         out.write('    </measure>\n')
-
-
-_TYPE_BY_DIV = {16: "whole", 8: "half", 4: "quarter", 2: "eighth", 1: "16th"}
 
 
 def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
@@ -187,11 +187,20 @@ def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
     # is spaced to the NEXT onset, guaranteeing every onset lands on its true
     # division (a held note is truncated rather than shoved past the next attack,
     # which is what previously pushed everything late and overflowed the measure).
+    #
+    # A single key cannot sound twice at one instant: when rounding fuses two
+    # strikes of the SAME pitch into one division, shift the later strike to the
+    # next free division so it stays a distinct note instead of an impossible
+    # unison chord. Distinct pitches that round together remain a real chord.
     events: dict[int, list] = {}
-    for n in notes:
+    for n in sorted(notes, key=lambda n: n.start):
         sd = to_div(n.start)
-        if m0 <= sd < m1:
-            events.setdefault(sd - m0, []).append(n)
+        if not (m0 <= sd < m1):
+            continue
+        pos = sd - m0
+        while any(x.midi == n.midi for x in events.get(pos, ())) and pos + 1 < per_measure:
+            pos += 1
+        events.setdefault(pos, []).append(n)
     positions = sorted(events)
     cursor = 0
     for k, pos in enumerate(positions):
@@ -220,11 +229,15 @@ def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
         _write_rest(out, per_measure - cursor, staff, divisions)
 
 
-def _dur_type(dur: int) -> str:
-    for d in sorted(_TYPE_BY_DIV, reverse=True):
+def _dur_type(dur: int, divisions: int) -> str:
+    # standard note value <= dur, measured in divisions-per-quarter units
+    q = divisions
+    for d, name in ((4 * q, "whole"), (2 * q, "half"), (q, "quarter"),
+                    (max(1, q // 2), "eighth"), (max(1, q // 4), "16th"),
+                    (max(1, q // 8), "32nd")):
         if dur >= d:
-            return _TYPE_BY_DIV[d]
-    return "16th"
+            return name
+    return "32nd"
 
 
 def _write_pitch(out, n, dur, staff, divisions, spell, is_chord):
@@ -240,7 +253,7 @@ def _write_pitch(out, n, dur, staff, divisions, spell, is_chord):
     out.write('        </pitch>\n')
     out.write(f'        <duration>{dur}</duration>\n')
     out.write(f'        <voice>{staff}</voice>\n')
-    out.write(f'        <type>{_dur_type(dur)}</type>\n')
+    out.write(f'        <type>{_dur_type(dur, divisions)}</type>\n')
     out.write(f'        <staff>{staff}</staff>\n')
     out.write('      </note>\n')
 
@@ -249,5 +262,5 @@ def _write_rest(out, dur, staff, divisions):
     out.write('      <note>\n        <rest/>\n')
     out.write(f'        <duration>{dur}</duration>\n')
     out.write(f'        <voice>{staff}</voice>\n')
-    out.write(f'        <type>{_dur_type(dur)}</type>\n')
+    out.write(f'        <type>{_dur_type(dur, divisions)}</type>\n')
     out.write(f'        <staff>{staff}</staff>\n      </note>\n')
