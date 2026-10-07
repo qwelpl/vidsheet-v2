@@ -110,16 +110,19 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
 
     def _raw_div(t: float) -> int:
         # Rhythmic quantization for notation: snap the beat position to the
-        # nearest eighth / eighth-triplet / sixteenth before mapping to
-        # divisions. Rounding straight to the fine division grid prints onset
-        # jitter as ragged 7/12 + 5/12 values; a plain run of eighths then reads
-        # as a mess instead of even eighth notes. Raw MIDI timing is untouched.
+        # straight sixteenth grid (which also covers eighths and quarters),
+        # before mapping to divisions. Rounding straight to the fine division
+        # grid prints onset jitter as ragged values and a plain run of eighths
+        # reads as a mess. A triplet position is used ONLY when the onset is
+        # clearly on it - closer than the nearest sixteenth by a margin wider
+        # than detection jitter - so a jittered sixteenth is never misread as a
+        # triplet (which is what produced spurious 1/6-beat "32nd" durations).
+        # Raw MIDI timing is untouched.
         beat = (t - phase) / period
-        best = round(beat)
-        for s in (2, 3, 4):           # eighths, triplets, sixteenths per beat
-            q = round(beat * s) / s
-            if abs(beat - q) < abs(beat - best):
-                best = q
+        best = round(beat * 4) / 4                 # nearest sixteenth
+        q3 = round(beat * 3) / 3                    # nearest eighth-triplet
+        if abs(beat - q3) < abs(beat - best) - 0.06:
+            best = q3
         return int(round(best * divisions))
 
     # Anchor to the first onset's measure so the score doesn't start with a run
@@ -241,14 +244,17 @@ def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
 
 
 def _dur_type(dur: int, divisions: int) -> str:
-    # standard note value <= dur, measured in divisions-per-quarter units
+    # standard note value <= dur, measured in divisions-per-quarter units.
+    # The grid is 12 divisions/quarter, whose finest clean value is a sixteenth
+    # (3 divisions); there is no exact 32nd, so a short odd duration (e.g. a
+    # 2-division triplet-sixteenth) reads as a sixteenth rather than a spurious
+    # 32nd flag.
     q = divisions
     for d, name in ((4 * q, "whole"), (2 * q, "half"), (q, "quarter"),
-                    (max(1, q // 2), "eighth"), (max(1, q // 4), "16th"),
-                    (max(1, q // 8), "32nd")):
+                    (max(1, q // 2), "eighth"), (max(1, q // 4), "16th")):
         if dur >= d:
             return name
-    return "32nd"
+    return "16th"
 
 
 def _write_pitch(out, n, dur, staff, divisions, spell, is_chord):
