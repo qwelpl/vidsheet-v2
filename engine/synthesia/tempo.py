@@ -44,13 +44,41 @@ def estimate_tempo(notes: list[NoteEvent], fps: float) -> TempoAnalysis:
     if len(iois) < 3:
         return TempoAnalysis(120.0, 0.5, 0.0, (4, 4), [TempoSegment(0.0, 120.0)], 0.2)
 
-    # search beat period by scoring how well onsets fall on a grid (§19)
-    best_period, best_score = 0.5, -1.0
-    for bpm in np.arange(50, 200.5, 0.5):
-        period = 60.0 / bpm
-        score = _grid_score(onsets, period)
-        if score > best_score:
-            best_score, best_period = score, period
+    # The beat is an integer multiple of the piece's dominant pulse. A plain
+    # grid search is degenerate - _grid_score rewards onsets near ANY grid line,
+    # so a finer (faster) grid always fits at least as well and the search runs
+    # off to the bpm ceiling, doubling or quadrupling the true tempo (§19). So:
+    # find the modal inter-onset interval (the pulse), then pick the multiple of
+    # it whose bpm lands in a musical range, breaking ties by grid fit.
+    bins = np.arange(0.04, 2.0, 0.02)
+    hist, edges = np.histogram(iois, bins=bins)
+    pulse = float(edges[int(hist.argmax())] + 0.01)  # centre of the modal bin
+
+    cands = []
+    for m in (1, 2, 3, 4, 6):
+        period = pulse * m
+        bpm = 60.0 / period
+        if 65.0 <= bpm <= 170.0:
+            cands.append(period)
+    if cands:
+        # grid fit barely separates octaves on a rubato piece, so among the
+        # candidates that fit within a tolerance of the best, take the FASTEST
+        # (smallest period): straight eighths are far more common than an
+        # all-triplet or half-speed reading, and a faster beat keeps the
+        # notation grid cells small enough that genuinely separate notes never
+        # round together into one chord.
+        best_fit = max(_grid_score(onsets, p) for p in cands)
+        best_period = min(p for p in cands
+                          if _grid_score(onsets, p) >= best_fit - 0.01)
+    else:
+        # pulse outside any sane octave: fall back to a bounded grid search
+        best_period, best = 0.5, -1.0
+        for bpm in np.arange(65, 170.5, 0.5):
+            period = 60.0 / bpm
+            s = _grid_score(onsets, period)
+            if s > best:
+                best, best_period = s, period
+    best_score = _grid_score(onsets, best_period)
     phase = _best_phase(onsets, best_period)
     bpm = 60.0 / best_period
     conf = float(np.clip(best_score, 0.2, 0.98))
@@ -64,11 +92,13 @@ def estimate_tempo(notes: list[NoteEvent], fps: float) -> TempoAnalysis:
 
 def _grid_score(onsets: np.ndarray, period: float) -> float:
     phase_frac = ((onsets / period) % 1.0)
-    # reward onsets near an integer multiple (allow eighth/sixteenth subdivisions)
-    err = np.minimum(phase_frac, 1 - phase_frac)
-    sub = np.minimum(np.abs(phase_frac - 0.5), err)  # eighth positions
-    combined = np.minimum(err, sub)
-    return float(1.0 - 2.0 * combined.mean())
+    # reward onsets near any sixteenth-grid position (0, 1/4, 1/2, 3/4). The old
+    # score rewarded only beats and eighths, so a run of real sixteenths scored
+    # HIGHER at half-tempo (where they land on eighths) than at the true tempo
+    # (where they land on the unrewarded quarter positions) - the main driver of
+    # the octave error that fused fast notes into chords.
+    err = np.abs(phase_frac - np.round(phase_frac * 4.0) / 4.0)
+    return float(1.0 - 4.0 * err.mean())
 
 
 def _best_phase(onsets: np.ndarray, period: float) -> float:

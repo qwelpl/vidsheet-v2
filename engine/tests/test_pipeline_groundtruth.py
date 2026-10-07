@@ -155,7 +155,9 @@ def test_musicxml_measures_are_time_complete():
     ]
     xml = _build_musicxml(notes, tempo)
     root = ET.fromstring(xml)
-    per = 4 * 4  # divisions * beats
+    divisions = int(root.find(".//attributes/divisions").text)
+    beats = int(root.find(".//attributes/time/beats").text)
+    per = divisions * beats
     for meas in root.iter("measure"):
         sums = {1: 0, 2: 0}
         for note in meas.findall("note"):
