@@ -44,44 +44,29 @@ def estimate_tempo(notes: list[NoteEvent], fps: float) -> TempoAnalysis:
     if len(iois) < 3:
         return TempoAnalysis(120.0, 0.5, 0.0, (4, 4), [TempoSegment(0.0, 120.0)], 0.2)
 
-    # The beat is an integer multiple of the piece's dominant pulse. A plain
-    # grid search is degenerate - _grid_score rewards onsets near ANY grid line,
-    # so a finer (faster) grid always fits at least as well and the search runs
-    # off to the bpm ceiling, doubling or quadrupling the true tempo (§19). So:
-    # find the modal inter-onset interval (the pulse), then pick the multiple of
-    # it whose bpm lands in a musical range, breaking ties by grid fit.
-    bins = np.arange(0.04, 2.0, 0.02)
-    hist, edges = np.histogram(iois, bins=bins)
-    pulse = float(edges[int(hist.argmax())] + 0.01)  # centre of the modal bin
+    # Find the tempo whose sixteenth grid the onsets sit on most tightly (§19).
+    # The correct tempo is a RAZOR-SHARP peak: over a 3-minute piece a 1 bpm
+    # error drifts the grid most of a beat by the end, so the fit at the true
+    # bpm towers over its neighbours. That sharpness means we must scan finely -
+    # a coarse pulse estimate lands in the flat basin beside the needle and a
+    # local refine can't climb to it. So: a cheap coarse pass over the musical
+    # range to find the basin, then a fine pass to pin it, phase optimised at
+    # each step. Concentration is onset count near a grid line, which does not
+    # inflate with a finer grid the way a fractional score does, so staying
+    # inside a musical bpm range is enough to avoid the double/half-tempo trap.
+    coarse = np.arange(65.0, 170.01, 0.2)
+    cc = np.array([_grid_conc(onsets, 60.0 / b)[0] for b in coarse])
+    b0 = float(coarse[int(cc.argmax())])
+    fine = np.arange(max(65.0, b0 - 0.4), min(170.0, b0 + 0.4) + 1e-9, 0.01)
+    best_conc, best_period, phase = -1.0, 60.0 / b0, 0.0
+    for b in fine:
+        period = 60.0 / b
+        c, ph = _grid_conc(onsets, period)
+        if c > best_conc:
+            best_conc, best_period, phase = c, period, ph
 
-    cands = []
-    for m in (1, 2, 3, 4, 6):
-        period = pulse * m
-        bpm = 60.0 / period
-        if 65.0 <= bpm <= 170.0:
-            cands.append(period)
-    if cands:
-        # grid fit barely separates octaves on a rubato piece, so among the
-        # candidates that fit within a tolerance of the best, take the FASTEST
-        # (smallest period): straight eighths are far more common than an
-        # all-triplet or half-speed reading, and a faster beat keeps the
-        # notation grid cells small enough that genuinely separate notes never
-        # round together into one chord.
-        best_fit = max(_grid_score(onsets, p) for p in cands)
-        best_period = min(p for p in cands
-                          if _grid_score(onsets, p) >= best_fit - 0.01)
-    else:
-        # pulse outside any sane octave: fall back to a bounded grid search
-        best_period, best = 0.5, -1.0
-        for bpm in np.arange(65, 170.5, 0.5):
-            period = 60.0 / bpm
-            s = _grid_score(onsets, period)
-            if s > best:
-                best, best_period = s, period
-    best_score = _grid_score(onsets, best_period)
-    phase = _best_phase(onsets, best_period)
     bpm = 60.0 / best_period
-    conf = float(np.clip(best_score, 0.2, 0.98))
+    conf = float(np.clip(best_conc, 0.2, 0.98))
 
     beats = list(np.arange(phase, onsets[-1] + best_period, best_period))
     seg = TempoSegment(start=float(onsets[0]), bpm=float(bpm), beats=[float(b) for b in beats])
@@ -90,26 +75,19 @@ def estimate_tempo(notes: list[NoteEvent], fps: float) -> TempoAnalysis:
                          segments=[seg], confidence=conf)
 
 
-def _grid_score(onsets: np.ndarray, period: float) -> float:
-    phase_frac = ((onsets / period) % 1.0)
-    # reward onsets near any sixteenth-grid position (0, 1/4, 1/2, 3/4). The old
-    # score rewarded only beats and eighths, so a run of real sixteenths scored
-    # HIGHER at half-tempo (where they land on eighths) than at the true tempo
-    # (where they land on the unrewarded quarter positions) - the main driver of
-    # the octave error that fused fast notes into chords.
-    err = np.abs(phase_frac - np.round(phase_frac * 4.0) / 4.0)
-    return float(1.0 - 4.0 * err.mean())
-
-
-def _best_phase(onsets: np.ndarray, period: float) -> float:
-    best_phase, best = 0.0, -1.0
-    for p in np.linspace(0, period, 24, endpoint=False):
-        frac = (((onsets - p) / period) % 1.0)
-        err = np.minimum(frac, 1 - frac)
-        score = -err.mean()
-        if score > best:
-            best, best_phase = score, p
-    return float(onsets[0] - ((onsets[0] - best_phase) % period))
+def _grid_conc(onsets: np.ndarray, period: float, sub: int = 4,
+               tol: float = 0.02, nph: int = 64) -> tuple[float, float]:
+    """For a given beat ``period``, return the best achievable grid
+    concentration and the phase that achieves it: the largest fraction of
+    onsets landing within ``tol`` seconds of a sub-beat grid line (``sub``
+    lines per beat), maximised over phase. Vectorised over the phase grid."""
+    step = period / sub
+    phs = np.linspace(0.0, step, nph, endpoint=False)
+    g = (onsets[None, :] - phs[:, None]) / step
+    err = np.abs(g - np.round(g)) * step
+    conc = (err <= tol).mean(axis=1)
+    i = int(conc.argmax())
+    return float(conc[i]), float(phs[i])
 
 
 # division grid in beats (incl. triplets) used for notation snapping
