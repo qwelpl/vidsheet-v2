@@ -177,7 +177,8 @@ def analyze(video_path: str, opts: Options,
                       "progress": 0.08 + 0.62 * min(1.0, n / total)})
         v = estimate_fall_speed(collector.hist, geom)
         prog({"stage": "track", "message": f"Fall speed {v:.0f} px/s", "progress": 0.72})
-        notes = extract_notes(collector.hist, geom, meta.fps, v)
+        notes = extract_notes(collector.hist, geom, meta.fps, v,
+                              audio_onsets=audio_onsets)
         prog({"stage": "reconstruct", "message": f"{len(notes)} notes reconstructed",
               "progress": 0.80})
 
