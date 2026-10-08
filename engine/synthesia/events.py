@@ -90,7 +90,8 @@ def _slope(ts, ys) -> float:
 
 def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
                   fps: float, v_global: float,
-                  min_gap_frames: int = 1) -> list[NoteEvent]:
+                  min_gap_frames: int = 1,
+                  audio_onsets: "np.ndarray | None" = None) -> list[NoteEvent]:
     strike = float(geom.strike_y)
     # Occupancy band. A hit-flash strip above the keys caps how far a bar's
     # coloured leading edge descends, so bars top out several pixels SHORT of the
@@ -110,14 +111,16 @@ def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
     for midi, h in hist.items():
         if not h.frames:
             continue
-        notes.extend(_extract_lane(midi, h, geom, strike, band, fps, v_global, span))
+        notes.extend(_extract_lane(midi, h, geom, strike, band, fps, v_global, span,
+                                   audio_onsets))
     notes.sort(key=lambda n: (n.start, n.midi))
     for i, n in enumerate(notes):
         n.id = i + 1
     return notes
 
 
-def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=1e9):
+def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=1e9,
+                  audio_onsets=None):
     times = h.times
     frames = h.frames
     n = len(times)
@@ -143,6 +146,22 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
     # its edge flat at the line and produces no notch, so it is never split.
     hit_line = strike - band + 6.0
     restrikes = _restrike_onsets(bottom, occ, hit_line)
+    # A re-attack makes a SOUND, so when the audio track is available keep only
+    # restrikes backed by an audio attack near their time. Animated bars draw
+    # scrolling highlight streaks that the visual re-attack test fires on even
+    # though no note is replayed; those have no attack and are dropped, while a
+    # genuine fast repeat (its own attack, >30ms apart so the detector resolves
+    # it) survives. The first, rising-edge onset of a note is never gated.
+    if restrikes and audio_onsets is not None and len(audio_onsets):
+        ao = np.asarray(audio_onsets)
+        kept = set()
+        for r in restrikes:
+            t = h.times[r]
+            j = int(np.searchsorted(ao, t))
+            if min((abs(ao[k] - t) for k in (j - 1, j) if 0 <= k < ao.size),
+                   default=1e9) <= 0.05:
+                kept.add(r)
+        restrikes = kept
     if restrikes:
         onset_frames = sorted(set(onset_frames) | restrikes)
     next_onset = _next_onset_after(onset_frames, n)
