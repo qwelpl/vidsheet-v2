@@ -101,25 +101,45 @@ def write_musicxml(path: str, notes: list[NoteEvent], tempo: TempoAnalysis) -> N
 
 
 def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
-    divisions = 12  # divisions per quarter: resolves 16ths (3) and triplets (4)
     period = tempo.beat_period
     phase = tempo.beat_phase
     beats_per_measure, beat_type = tempo.time_signature
+
+    # Choose the notation resolution from the data instead of assuming sixteenths.
+    # A fast piece whose onsets concentrate on the 32nd grid clearly better than
+    # the 16th grid needs 24 divisions/quarter to print those 32nds; otherwise
+    # 12 is plenty and avoids fabricating 32nds from jitter. Never go finer than
+    # the detected timing can carry (a 32nd below ~one video frame is noise).
+    fine_sub, divisions = 4, 12
+    if len(notes) >= 16:
+        starts = [n.start for n in notes]
+
+        def _conc(sub: int) -> float:
+            step = period / sub
+            best = 0.0
+            ph = 0.0
+            while ph < step:
+                hits = sum(1 for s in starts
+                           if abs((s - phase - ph) / step - round((s - phase - ph) / step)) * step <= 0.02)
+                best = max(best, hits / len(starts))
+                ph += step / 24
+            return best
+
+        if period / 8 >= 0.028 and _conc(8) >= _conc(4) + 0.08:
+            fine_sub, divisions = 8, 24   # 32nd=3, 16th=6, eighth=12, quarter=24
 
     per_measure = divisions * beats_per_measure
 
     def _raw_div(t: float) -> int:
         # Rhythmic quantization for notation: snap the beat position to the
-        # straight sixteenth grid (which also covers eighths and quarters),
-        # before mapping to divisions. Rounding straight to the fine division
-        # grid prints onset jitter as ragged values and a plain run of eighths
-        # reads as a mess. A triplet position is used ONLY when the onset is
-        # clearly on it - closer than the nearest sixteenth by a margin wider
-        # than detection jitter - so a jittered sixteenth is never misread as a
-        # triplet (which is what produced spurious 1/6-beat "32nd" durations).
-        # Raw MIDI timing is untouched.
+        # chosen straight grid (sixteenth, or thirty-second for a fast piece),
+        # which also covers the coarser values. Rounding straight to the fine
+        # division grid prints onset jitter as ragged values. A triplet position
+        # is used ONLY when the onset is closer to it than to the nearest
+        # straight grid line by a margin wider than detection jitter, so jitter
+        # is never misread as a tuplet. Raw MIDI timing is untouched.
         beat = (t - phase) / period
-        best = round(beat * 4) / 4                 # nearest sixteenth
+        best = round(beat * fine_sub) / fine_sub
         q3 = round(beat * 3) / 3                    # nearest eighth-triplet
         if abs(beat - q3) < abs(beat - best) - 0.06:
             best = q3
@@ -251,15 +271,18 @@ def _note_value(dur: int, divisions: int) -> tuple[str, int]:
     the base. A duration that is not a clean dotted value falls back to the
     plain base type (a residual tie is not modelled)."""
     q = divisions
-    for b, name in ((4 * q, "whole"), (2 * q, "half"), (q, "quarter"),
-                    (max(1, q // 2), "eighth"), (max(1, q // 4), "16th")):
+    bases = [(4 * q, "whole"), (2 * q, "half"), (q, "quarter"),
+             (max(1, q // 2), "eighth"), (max(1, q // 4), "16th")]
+    if q >= 24:                       # a 32nd is a clean value only at >=24/quarter
+        bases.append((q // 8, "32nd"))
+    for b, name in bases:
         if dur >= b:
             if dur * 2 == b * 3:      # dotted  (base * 1.5)
                 return name, 1
             if dur * 4 == b * 7:      # double-dotted (base * 1.75)
                 return name, 2
             return name, 0
-    return "16th", 0
+    return bases[-1][1], 0
 
 
 def _dur_type(dur: int, divisions: int) -> str:
