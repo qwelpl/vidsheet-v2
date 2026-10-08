@@ -125,7 +125,7 @@ def snap_onsets(notes: list[NoteEvent], onsets: np.ndarray,
     # melodic 2nd stacked instead of two separate notes). One frame-ish.
     sim = 0.045
     orig = {id(n): float(n.start) for n in notes}
-    claimed_pitch: set = set()        # (midi, attack): a key can't double on one attack
+    attack_pitches: dict = {}         # attack -> midis already snapped to it
     attack_src: dict = {}             # attack -> earliest detected onset that claimed it
     for n in sorted(notes, key=lambda x: orig[id(x)]):
         s0 = orig[id(n)]
@@ -133,13 +133,16 @@ def snap_onsets(notes: list[NoteEvent], onsets: np.ndarray,
         hi = int(np.searchsorted(onsets, s0 + tol))
         # nearest candidate attacks first
         for a in sorted((float(x) for x in onsets[lo:hi]), key=lambda x: abs(x - s0)):
-            if (n.midi, a) in claimed_pitch:
+            # a chord tone on this attack must be a distinct, non-adjacent pitch:
+            # a repeat (same pitch) or a step away (<=2 semitones, a melodic run
+            # tone) must not pile onto the same instant and collapse into a cluster
+            if any(abs(n.midi - pm) <= 2 for pm in attack_pitches.get(a, ())):
                 continue
             # joining an already-claimed attack is only valid as a chord when the
             # two notes were struck together; a run straddling the attack is not
             if a in attack_src and abs(s0 - attack_src[a]) > sim:
                 continue
-            claimed_pitch.add((n.midi, a))
+            attack_pitches.setdefault(a, []).append(n.midi)
             attack_src.setdefault(a, s0)
             if abs(a - n.start) > 1e-4:
                 dur = n.duration

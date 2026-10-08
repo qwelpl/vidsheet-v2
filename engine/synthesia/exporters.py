@@ -172,13 +172,13 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
               '  </part-list>\n')
     out.write('  <part id="P1">\n')
     _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
-                    to_div, tempo.bpm, key, spell)
+                    to_div, tempo.bpm, key, spell, divisions // fine_sub)
     out.write('  </part>\n</score-partwise>\n')
     return out.getvalue()
 
 
 def _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
-                    to_div, bpm, key, spell):
+                    to_div, bpm, key, spell, grid_step):
     all_notes = left + right
     if not all_notes:
         end_div = divisions * beats_per_measure
@@ -207,33 +207,35 @@ def _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
         m0, m1 = m * per_measure, (m + 1) * per_measure
         legato = max(2, divisions // 2)  # absorb trailing gaps below an eighth
         _write_staff(out, right, 1, m0, m1, per_measure, to_div, divisions, spell,
-                     min_rest_div=legato)
+                     grid_step, min_rest_div=legato)
         out.write(f'      <backup><duration>{per_measure}</duration></backup>\n')
         _write_staff(out, left, 2, m0, m1, per_measure, to_div, divisions, spell,
-                     min_rest_div=legato)
+                     grid_step, min_rest_div=legato)
         out.write('    </measure>\n')
 
 
 def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
-                 spell, min_rest_div=2):
+                 spell, grid_step, min_rest_div=2):
     # Gather onsets in this measure, grouped by start division (chords). A single
     # MusicXML voice is monophonic, so overlapping notes are flattened: each note
     # is spaced to the NEXT onset, guaranteeing every onset lands on its true
     # division (a held note is truncated rather than shoved past the next attack,
     # which is what previously pushed everything late and overflowed the measure).
     #
-    # A single key cannot sound twice at one instant: when rounding fuses two
-    # strikes of the SAME pitch into one division, shift the later strike to the
-    # next free division so it stays a distinct note instead of an impossible
-    # unison chord. Distinct pitches that round together remain a real chord.
+    # A chord is distinct, non-adjacent pitches at one instant. When rounding to
+    # the grid fuses a step-neighbour (<=2 semitones, incl. a same-pitch repeat)
+    # into one position, it is a melodic run tone, not a chord tone, so shift it
+    # to the next grid cell to keep it a separate note rather than a cluster/
+    # unison chord. Wider intervals rounding together stay a real chord.
     events: dict[int, list] = {}
     for n in sorted(notes, key=lambda n: n.start):
         sd = to_div(n.start)
         if not (m0 <= sd < m1):
             continue
         pos = sd - m0
-        while any(x.midi == n.midi for x in events.get(pos, ())) and pos + 1 < per_measure:
-            pos += 1
+        while any(abs(x.midi - n.midi) <= 2 for x in events.get(pos, ())) \
+                and pos + grid_step < per_measure:
+            pos += grid_step
         events.setdefault(pos, []).append(n)
     positions = sorted(events)
     cursor = 0

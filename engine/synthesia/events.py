@@ -374,25 +374,27 @@ def align_chords(notes: list[NoteEvent], onsets=None, window: float = 0.033) -> 
             near = [c for c in cand if abs(c - target) <= window]
             if near:
                 target = float(min(near, key=lambda c: abs(c - target)))
-        # A chord is distinct pitches struck together; two notes of the SAME pitch
-        # inside the window are a fast repeat, not a chord, and must not be snapped
-        # onto one instant (a key cannot sound twice at once) or one is dropped as a
-        # duplicate and the repeat is lost. At most one note per pitch takes the
-        # shared onset; the rest keep their own time.
-        placed_pitch: set = set()
-        for k in g:
+        # A chord is distinct, NON-adjacent pitches struck together. A note within
+        # a step (<=2 semitones) of one already on this beat is a melodic run step,
+        # not a chord tone: snapping it onto the shared instant collapses a fast
+        # (often chromatic) run into a cluster chord - rampant at low frame rates
+        # where a run's frame spacing falls inside the chord window. Such a note,
+        # and a repeat of a pitch already placed, keep their own time. Anchor on
+        # the notes nearest the beat so the real chord tones claim it first.
+        placed: list[int] = []
+        for k in sorted(g, key=lambda k: abs(notes[k].start - target)):
             n = notes[k]
+            if any(abs(n.midi - pm) <= 2 for pm in placed):
+                continue                   # run step / repeat: keep distinct
             if abs(n.start - target) <= 1e-4:
-                placed_pitch.add(n.midi)
-                continue
-            if n.midi in placed_pitch:     # keep this repeat distinct
+                placed.append(n.midi)
                 continue
             dur = n.duration
             if target >= n.end:            # never invert a short note
                 continue
             n.start = target
             n.end = target + dur
-            placed_pitch.add(n.midi)
+            placed.append(n.midi)
             moved += 1
 
     for k in order:
