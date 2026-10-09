@@ -49,6 +49,7 @@ def cmd_analyze(args):
         video, title = videoio.download(video, tmp)
         sys.stderr.write(f"Downloaded: {title or video}\n")
     opts = Options.for_preset(args.preset)
+    opts.detector = args.detector
     result = analyze(video, opts, _progress)
     _export(result, args.out)
 
@@ -71,6 +72,7 @@ def main():
     a = sub.add_parser("analyze")
     a.add_argument("video")
     a.add_argument("--preset", default="balanced", choices=["fast", "balanced", "maximum"])
+    a.add_argument("--detector", default="auto", choices=["auto", "bars", "keylight"])
     a.add_argument("--out", default="out")
     a.set_defaults(func=cmd_analyze)
     d = sub.add_parser("demo")
