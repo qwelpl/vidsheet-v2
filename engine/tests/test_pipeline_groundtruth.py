@@ -99,6 +99,30 @@ def test_keyboard_band_spans_black_keys():
     assert abs(bottom - bottom_true) <= 8
 
 
+def test_keylight_far_cover_rejects_strike_line_glow():
+    # A key-highlight press fills the whole key body, so its FAR half (away from
+    # the strike line) is as solidly covered as the near half. A strike-line glow
+    # or particle-smoke halo pools at the near edge and decays before the far half.
+    # ``_far_cover`` scores the far half only, so a top-weighted halo collapses to
+    # ~0 while a real press stays high - the discriminator carries no colour- or
+    # video-specific constant, only the key's own midline (§55).
+    import numpy as np
+    from synthesia.keylight import _far_cover
+
+    press = np.ones((20, 6), bool)                     # solid, full key body
+    assert _far_cover(press) == 1.0
+
+    halo = np.zeros((20, 6), bool)
+    halo[:7, :] = True                                 # colour only near the top
+    assert _far_cover(halo) == 0.0                     # far half empty -> rejected
+
+    # a genuine press whose near rows are darkened by the strike-line edge must
+    # still register: the far half is what counts.
+    edge_dimmed = np.ones((20, 6), bool)
+    edge_dimmed[:3, :] = False
+    assert _far_cover(edge_dimmed) == 1.0
+
+
 def test_keylight_repeats_split_on_coverage_dip():
     # A key-highlight repeat re-strikes a key that only *dims* between hits (its
     # colour coverage dips and recovers without ever fully clearing) and whose

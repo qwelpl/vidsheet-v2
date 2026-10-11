@@ -24,6 +24,21 @@ from .model import NoteEvent, Hand, is_black_key
 from .theme import ThemeModel
 
 
+def _far_cover(mask: np.ndarray) -> float:
+    """Coverage of ``mask`` measured over the key's FAR half - the end away from
+    the strike line. A press fills the whole key, so its far half stays solid; a
+    strike-line glow/smoke halo pools at the near edge and decays out before
+    reaching the far half, so its coverage there collapses toward zero. Scoring
+    the far half alone (rather than the whole patch, which a halo inflates, or the
+    near half, which the strike-line edge darkens even on a real press) is what
+    separates the two. Parameter-free: the split is the key's own midline, the
+    near/far sense fixed by the keyboard geometry (strike line at the top)."""
+    h = mask.shape[0]
+    if h < 2:
+        return float(mask.mean()) if mask.size else 0.0
+    return float(mask[h // 2:].mean())
+
+
 @dataclass
 class KeyLightSampler:
     geom: KeyboardGeometry
@@ -44,6 +59,24 @@ class KeyLightSampler:
         # Follow the theme's own detected saturation floor instead, clamped so a
         # near-grey keybed shadow still can't masquerade as a lit note.
         self.sat_min = int(np.clip(self.theme.sat_min, 35, self.sat_min))
+        # Translucent particle smoke / glow rises from played notes, shares the
+        # hand HUE, and drifts over the keys. At the permissive ``sat_min`` (kept
+        # low so a pale hand still registers, §55) that bleed floods the keys: a
+        # colour plume over the treble reads every black key under it as
+        # permanently pressed (the "fried" stuck-key clusters). But a real press
+        # is an OPAQUE patch of note colour, which the diluted bleed is not, in two
+        # independent ways - and a key is only counted lit where the colour is
+        # opaque by at least one of them:
+        #   (a) saturation near the note core. Taken as a fraction of the detected
+        #       cluster saturation so it rejects diluted smoke yet still admits a
+        #       genuinely pastel theme (whose cores are themselves low-saturation).
+        #   (b) a spatially UNIFORM fill. A flat render paints the pressed key one
+        #       solid colour (saturation variance ~0), even a pale one; smoke is
+        #       turbulent (variance many times higher). This rescues pale, clean
+        #       renders that (a) alone would reject, without re-admitting smoke.
+        core_sat = min((c.sat for c in self.theme.clusters), default=float(self.sat_min))
+        self.sat_solid = int(np.clip(0.9 * core_sat, self.sat_min, 160))
+        self.uniform_tol = 6.0   # max in-patch saturation std for an opaque fill
 
     def _region(self, lane) -> tuple[int, int, int, int]:
         """(y0, y1, x0, x1) of the key body to sample, avoiding the top glow
@@ -80,8 +113,24 @@ class KeyLightSampler:
             best_frac, best_c = 0.0, -1
             for ci, hue in enumerate(self.hues):
                 dh = np.minimum(np.abs(h - hue), 180 - np.abs(h - hue))
-                m = (dh <= 18) & (s >= self.sat_min) & (v >= self.val_min)
-                frac = float(m.mean())
+                # candidate note-coloured pixels at the permissive floor
+                hue_m = (dh <= 18) & (s >= self.sat_min) & (v >= self.val_min)
+                # Glow and particle smoke are a HALO that climbs from the strike
+                # line: colour pools at the near (top) edge of the key body and
+                # fades out before the far end, where a real press is still solidly
+                # filled. So score each key by its FAR half only (see ``_far_cover``)
+                # instead of the whole-patch mean, which a halo inflates - a
+                # top-weighted bleed collapses to ~0 there while a genuine press,
+                # uniform top-to-bottom, stays high. This is the press/halo geometry
+                # itself, carrying no colour- or video-specific constant (§55).
+                cover = _far_cover(hue_m)
+                # opaque fraction: the matched pixels that are near-core saturated
+                frac = _far_cover(hue_m & (s >= self.sat_solid))
+                # ...or rescue a flat, solidly-filled low-saturation patch (a clean
+                # pale render) that the saturation gate alone would miss, while a
+                # turbulent smoke patch - never spatially uniform - stays rejected.
+                if cover >= 0.5 and float(s[hue_m].std()) <= self.uniform_tol:
+                    frac = cover
                 if frac > best_frac:
                     best_frac, best_c = frac, ci
             out[midi] = (best_c, best_frac)
@@ -129,13 +178,13 @@ class KeyLightCollector:
 
 def extract_notes(hist: dict[int, _LaneLight], geom: KeyboardGeometry, fps: float,
                   audio_onsets: np.ndarray, min_frames: int = 2,
-                  fill_thr: float = 0.4) -> list[NoteEvent]:
+                  fill_thr: float = 0.4, solid_fill: float = 0.6) -> list[NoteEvent]:
     frame_dt = 1.0 / fps
     onsets = np.sort(audio_onsets) if audio_onsets is not None else np.array([])
     notes: list[NoteEvent] = []
     for midi, lane in hist.items():
         notes.extend(_lane_notes(midi, lane, geom, frame_dt, onsets, min_frames,
-                                 fill_thr))
+                                 fill_thr, solid_fill))
     notes.sort(key=lambda n: (n.start, n.midi))
     for i, n in enumerate(notes):
         n.id = i + 1
@@ -171,7 +220,7 @@ def _subframe_offset(fill, times, last_lit, n, thr) -> float:
 
 
 def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames,
-                fill_thr=0.4):
+                fill_thr=0.4, solid_fill=0.6):
     times = lane.times
     lit = lane.lit
     fill = lane.fill
@@ -200,7 +249,16 @@ def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames,
                     break
             j += 1
         run_len = last_lit - i + 1
-        if run_len >= min_frames:
+        # A genuine key-light fills the whole key body (coverage ~0.9). Notes
+        # composited over moving footage bleed colour onto the keys too - and when
+        # the footage shares a hand's hue (e.g. a blue ambience / sparkle effect
+        # behind a blue left-hand track) a lane briefly covers past ``fill_thr``
+        # without ever lighting solidly, spawning phantom notes (here, hundreds of
+        # short left-hand slivers in the middle of the right hand). Require the run
+        # to reach a solid peak coverage so a partial, flickering bleed is rejected
+        # while a real light-up is kept (§55).
+        peak_fill = max(fill[i:last_lit + 1], default=0.0)
+        if run_len >= min_frames and peak_fill >= solid_fill:
             t_on = _subframe_onset(fill, times, i, fill_thr)
             t_off = _subframe_offset(fill, times, last_lit, n, fill_thr)
             cluster = int(np.bincount(clusters).argmax()) if clusters else 0

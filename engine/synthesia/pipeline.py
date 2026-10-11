@@ -131,7 +131,7 @@ def analyze(video_path: str, opts: Options,
     # renders. 'auto' picks key-highlight only when the keyboard clearly lights
     # up pressed keys.
     from . import keylight
-    composited = _roll_is_composited(median, geom)
+    composited = _roll_is_composited(median, geom, sample_frames)
     use_keylight = opts.detector == "keylight" or (
         opts.detector == "auto" and composited
         and keylight.applicable(geom, theme, sample_frames))
@@ -283,17 +283,39 @@ def _hitline_band_height(frames: list[np.ndarray], geom: kb.KeyboardGeometry,
     return int(h)
 
 
-def _roll_is_composited(median: np.ndarray, geom) -> bool:
+def _roll_is_composited(median: np.ndarray, geom,
+                        sample_frames: Optional[list[np.ndarray]] = None) -> bool:
     """Is the falling-note roll drawn over moving footage rather than a clean
-    dark background? The temporal median averages notes away, leaving the static
-    background; a clean render is near-black and edge-free, a video overlay is
-    bright and textured. Composited roll -> prefer key-highlight detection."""
+    dark background? Composited roll -> prefer key-highlight detection.
+
+    A STILL backdrop (album art, a character montage) survives the temporal
+    median, so it shows up as a bright, textured median roll. But a backdrop of
+    MOVING footage - drifting particle smoke, a music video, an animation -
+    averages away in the median exactly like the notes do, leaving a near-black
+    median that looks clean while the live frames are anything but. Catch that
+    case from the per-pixel temporal spread across the sample frames: a clean
+    render's inter-bar background is pure static black (variance ~0 over the vast
+    majority of the roll), whereas moving footage keeps most of the roll in
+    constant churn. A false positive here is harmless - key-highlight is still
+    gated by ``keylight.applicable`` (the keys must actually light up), which a
+    genuinely clean render fails - so we can afford to be generous."""
     strike = int(geom.strike_y)
     roll = median[: max(1, strike - 4), :, :]
     gray = cv2.cvtColor(roll, cv2.COLOR_BGR2GRAY)
     brightness = float(gray.mean())
     edges = float(np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)).mean())
-    return brightness > 40.0 or edges > 12.0
+    if brightness > 40.0 or edges > 12.0:
+        return True
+    if sample_frames and len(sample_frames) >= 8:
+        cut = max(1, strike - 4)
+        stack = np.stack([
+            cv2.cvtColor(f[:cut, :, :], cv2.COLOR_BGR2GRAY).astype(np.float32)
+            for f in sample_frames
+        ])
+        churn = float((stack.std(axis=0) > 20.0).mean())
+        if churn > 0.35:
+            return True
+    return False
 
 
 def _quick_fall_speed(meta: VideoMeta, geom, theme, scale_w) -> float:
