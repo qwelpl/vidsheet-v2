@@ -99,6 +99,31 @@ def test_keyboard_band_spans_black_keys():
     assert abs(bottom - bottom_true) <= 8
 
 
+def test_white_boundaries_survive_printed_key_labels():
+    # Note-name letters / fingering numbers printed ON the keys read as dark
+    # columns in the lower keyboard strip and used to spawn phantom separators,
+    # halving the apparent key width and shattering the octave pattern. The
+    # boundary finder must lock to the keys' own dominant period and ignore the
+    # off-grid intruders.
+    import numpy as np
+    from synthesia.keyboard import _find_white_boundaries, _dominant_period
+
+    w = 660
+    period = 60
+    strip = np.full((20, w), 240, np.uint8)         # bright white-key bodies
+    for x in range(period, w, period):              # true separators every 60 px
+        strip[:, x - 1:x + 1] = 20
+    # dark labels printed mid-key at irregular offsets (the contamination)
+    for cx in range(period // 2, w, period):
+        strip[8:16, cx - 4:cx + 4] = 30
+
+    assert abs(_dominant_period(strip.max() - strip.mean(axis=0)) - period) <= 2
+    b = _find_white_boundaries(strip)
+    # ~10 true separators, not ~20; evenly spaced at the real period
+    assert 9 <= len(b) <= 11, f"expected ~10 boundaries, got {len(b)}"
+    assert abs(float(np.median(np.diff(b))) - period) <= 3
+
+
 def test_keylight_far_cover_rejects_strike_line_glow():
     # A key-highlight press fills the whole key body, so its FAR half (away from
     # the strike line) is as solidly covered as the near half. A strike-line glow
