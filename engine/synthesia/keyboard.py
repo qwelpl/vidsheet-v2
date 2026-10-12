@@ -182,78 +182,7 @@ def _find_white_boundaries(strip: np.ndarray) -> np.ndarray:
             i = j + 2
         else:
             i += 1
-    peaks = np.array(peaks, dtype=np.float64)
-    # White keys are a regular comb, so the true separators sit at one dominant
-    # pitch. Anything printed ON the keys - note-name letters, fingering numbers,
-    # a logo - also reads as a dark column here and injects extra, irregular
-    # "separators" that halve the apparent key width and shatter the octave
-    # pattern. Lock the boundaries to the comb's own period (recovered from the
-    # darkness profile, not assumed) so those off-grid intruders are dropped.
-    return _regularise_boundaries(peaks, inv)
-
-
-def _dominant_period(inv: np.ndarray, pmin: int = 6) -> float:
-    """Fundamental spatial period of the darkness profile via autocorrelation -
-    the white-key pitch. Robust to clutter printed on the keys: letters add noise
-    at assorted spacings but the regular separator comb dominates the periodicity.
-    Returns 0 if no clear period stands out.
-
-    The fundamental is the SMALLEST-lag autocorrelation peak, not the tallest: a
-    comb's harmonics (2x, 3x ... the key pitch) often autocorrelate higher than
-    the pitch itself, so a plain argmax would lock onto a multiple and halve the
-    key count. We take the first local maximum that still rises to at least half
-    the tallest peak in range."""
-    x = inv.astype(np.float64) - float(inv.mean())
-    if x.shape[0] < 2 * pmin or not np.any(x):
-        return 0.0
-    ac = np.correlate(x, x, "full")[x.shape[0] - 1:]
-    pmax = min(len(ac) - 2, len(inv) // 2)
-    if pmax <= pmin:
-        return 0.0
-    maxima = [l for l in range(pmin, pmax + 1)
-              if ac[l] >= ac[l - 1] and ac[l] >= ac[l + 1] and ac[l] > 0]
-    if not maxima:
-        return 0.0
-    floor = 0.5 * max(ac[l] for l in maxima)
-    lag = next((l for l in maxima if ac[l] >= floor), maxima[0])
-    # parabolic refinement around the integer peak for a sub-pixel period
-    a, b, c = ac[lag - 1], ac[lag], ac[lag + 1]
-    denom = a - 2 * b + c
-    if denom != 0:
-        lag = lag + 0.5 * (a - c) / denom
-    return float(lag)
-
-
-def _regularise_boundaries(peaks: np.ndarray, inv: np.ndarray) -> np.ndarray:
-    """Keep only separators consistent with the keyboard's dominant key pitch.
-
-    Walk a comb of the detected period across the span the raw peaks cover; at
-    each grid slot take the nearest raw peak if one falls within a third of a key,
-    otherwise synthesise the slot from the grid. Extra peaks from markings printed
-    on the keys fall between slots and are discarded; a genuinely clean keyboard,
-    whose peaks already sit one period apart, is reproduced unchanged."""
-    if len(peaks) < 3:
-        return peaks
-    period = _dominant_period(inv)
-    med = float(np.median(np.diff(peaks)))
-    # Only intervene when the raw peaks disagree with the comb period (markings
-    # present): a clean keyboard already matches it and is left exactly as-is.
-    if period <= 0 or med <= 0 or abs(med - period) <= 0.15 * period:
-        return peaks
-    lo, hi = float(peaks[0]), float(peaks[-1])
-    tol = period / 3.0
-    grid: list[float] = []
-    x = lo
-    while x <= hi + tol:
-        near = peaks[np.abs(peaks - x) <= tol]
-        if len(near):
-            pick = float(near[np.argmin(np.abs(near - x))])
-            grid.append(pick)
-            x = pick + period
-        else:
-            grid.append(x)
-            x += period
-    return np.array(grid, dtype=np.float64)
+    return np.array(peaks, dtype=np.float64)
 
 
 def _has_black_between(upper: np.ndarray, x0: float, x1: float) -> bool:
@@ -273,27 +202,6 @@ def _has_black_between(upper: np.ndarray, x0: float, x1: float) -> bool:
     central = float(upper[:, ca:cb].mean())
     white_ref = float(np.percentile(upper, 85))  # white-key body brightness
     return central < white_ref * 0.5
-
-
-def _has_black_between_wide(upper: np.ndarray, x0: float, x1: float) -> bool:
-    """Alternative black-key test by dark-region WIDTH rather than midpoint
-    brightness. A black key is ~half a white key wide; the separator line between
-    white keys is a few px. Counting dark columns across the whole centre-to-centre
-    span catches a black key wherever it sits - real black keys are offset from the
-    midpoint between front white-key centres, so the fixed central window of
-    ``_has_black_between`` misses them on some keyboards - while a bare separator
-    never reaches a key's width. Used as the fallback when the midpoint test's
-    octave pattern comes out weak (see ``build_geometry``)."""
-    span = x1 - x0
-    if span < 4:
-        return False
-    a, b = int(round(x0)), int(round(x1))
-    col = upper[:, max(0, a):max(1, b)].mean(axis=0)
-    white_ref = float(np.percentile(upper, 85))
-    dark_w = int((col < white_ref * 0.5).sum())
-    # a black key is ~0.5-0.6 of a white key wide; a separator is a few px. The
-    # 0.30 floor sits well below a key yet far above any separator.
-    return dark_w >= 0.30 * span
 
 
 def build_geometry(
@@ -326,11 +234,11 @@ def build_geometry(
     white_centers = (starts + ends) / 2.0
     white_hw = step / 2.0
 
-    # black-key presence between adjacent white keys. The midpoint-brightness
-    # test is crisp on a standard keyboard; the dark-width test survives black
-    # keys offset from the front-centre midpoint (some stylised renders). Keep
-    # whichever yields the cleaner octave pattern so neither keyboard regresses.
-    gaps = _best_gaps(upper, white_centers)
+    # black-key presence between adjacent white keys
+    gaps = [
+        _has_black_between(upper, white_centers[i], white_centers[i + 1])
+        for i in range(len(white_centers) - 1)
+    ]
 
     phase = _match_phase(gaps)
     lanes = _assign_pitches(white_centers, white_hw, gaps, phase)
@@ -344,21 +252,6 @@ def build_geometry(
         lanes=lanes, low_midi=lo_midi, high_midi=hi_midi,
         confidence=_geometry_confidence(gaps, phase),
     )
-
-
-def _best_gaps(upper: np.ndarray, white_centers: np.ndarray) -> list[bool]:
-    """Black-key gap sequence from whichever detector matches the octave pattern
-    best: the midpoint-brightness test (sharp on standard keyboards) or the
-    dark-width test (robust to offset black keys on stylised renders)."""
-    best_gaps: list[bool] = []
-    best_score = -1.0
-    for test in (_has_black_between, _has_black_between_wide):
-        gaps = [test(upper, white_centers[i], white_centers[i + 1])
-                for i in range(len(white_centers) - 1)]
-        score = _geometry_confidence(gaps, _match_phase(gaps))
-        if score > best_score:
-            best_score, best_gaps = score, gaps
-    return best_gaps
 
 
 def _match_phase(gaps: list[bool]) -> int:
