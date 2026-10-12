@@ -75,6 +75,50 @@ def test_30fps_source():
     assert g["mean_onset_error_ms"] < 35
 
 
+def test_white_boundaries_survive_printed_key_labels():
+    # Note-name letters / fingering numbers printed ON the keys read as dark
+    # columns in the lower keyboard strip and used to spawn phantom separators,
+    # halving the apparent key width and shattering the octave pattern. The
+    # boundary finder must lock to the keys' own dominant period and ignore the
+    # off-grid intruders.
+    import numpy as np
+    from synthesia.keyboard import _find_white_boundaries, _dominant_period
+
+    w = 660
+    period = 60
+    strip = np.full((20, w), 240, np.uint8)         # bright white-key bodies
+    for x in range(period, w, period):              # true separators every 60 px
+        strip[:, x - 1:x + 1] = 20
+    # dark labels printed mid-key at irregular offsets (the contamination)
+    for cx in range(period // 2, w, period):
+        strip[8:16, cx - 4:cx + 4] = 30
+
+    assert abs(_dominant_period(strip.max() - strip.mean(axis=0)) - period) <= 2
+    b = _find_white_boundaries(strip)
+    assert 9 <= len(b) <= 11, f"expected ~10 boundaries, got {len(b)}"
+    assert abs(float(np.median(np.diff(b))) - period) <= 3
+
+
+def test_black_group_phase_anchors_C():
+    # The octave phase (which white key is C) must come from the black-key 2/3
+    # grouping: the two-group (C#,D#) is the lone narrow gap bracketed by the two
+    # wide gaps that cross the black-less E-F and B-C white pairs. Its left key is
+    # C#, so the white key just left of it is C.
+    import numpy as np
+    from synthesia.keyboard import _phase_from_black_groups, _WHITE_SEMITONES
+
+    P = 60.0
+    # two octaves of white keys C..B, C index 0 and 7
+    white = np.arange(0, 14) * P + 40.0
+    # black keys at C#,D#,F#,G#,A# in each octave (offsets within the octave)
+    offs = [0.6, 1.6, 3.6, 4.6, 5.6]
+    black = np.array(sorted(white[0] + o * P for base in (0, 7)
+                            for o in [x + base for x in offs]))
+    phase = _phase_from_black_groups(white, black, P)
+    # white[0] is C, so its pitch class must be C (semitone 0)
+    assert phase is not None and _WHITE_SEMITONES[phase % 7] == 0
+
+
 def test_keyboard_band_spans_black_keys():
     # The keyboard band must reach up past the black-key region, not stop at the
     # white aprons below it. A row MEAN is dragged down through the black-key band
