@@ -189,13 +189,26 @@ def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames,
         j = i
         last_lit = i
         gap = 0
+        dark = 0
         clusters = [lit[i]]
         j = i + 1
         while j < n:
             if lit[j] >= 0:
-                clusters.append(lit[j]); last_lit = j; gap = 0
+                clusters.append(lit[j]); last_lit = j; gap = 0; dark = 0
             else:
                 gap += 1
+                # Distinguish a real key RELEASE from brief lit-detection flicker.
+                # A fast same-key repeat drops the key fully dark (coverage ~0) for
+                # a frame or two between hits; a flicker only dims it. Break the run
+                # on a full release so the repeat stays a separate note, but keep
+                # bridging a dim flicker up to ``max_gap`` so a held note is not
+                # chopped up (§12).
+                if fill[j] < 0.15:
+                    dark += 1
+                    if dark >= 2:
+                        break
+                else:
+                    dark = 0
                 if gap > max_gap:
                     break
             j += 1

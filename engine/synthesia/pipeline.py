@@ -182,6 +182,34 @@ def analyze(video_path: str, opts: Options,
         prog({"stage": "reconstruct", "message": f"{len(notes)} notes reconstructed",
               "progress": 0.80})
 
+        # Some renders fade the falling bars BEFORE the strike line and show the
+        # hit on the key-lighting instead (Pianella-style). The bar's coloured edge
+        # then never reaches the occupancy band, so bar tracking detects almost
+        # nothing - far fewer notes than the audio marks attacks. When that happens
+        # and the keys clearly light up, the note information is in the highlights:
+        # redo with key-highlight detection. Bars that genuinely cross the line
+        # (produce plenty of notes) keep their result.
+        if (opts.detector == "auto" and audio_onsets is not None
+                and len(audio_onsets) >= 20
+                and len(notes) < 0.5 * len(audio_onsets)
+                and keylight.applicable(geom, theme, sample_frames)):
+            prog({"stage": "theme",
+                  "message": "Bars fade before the strike line; switching to "
+                             "key-highlight", "progress": 0.78})
+            v = _quick_fall_speed(meta, geom, theme, scale_w)
+            kcol = keylight.KeyLightCollector(geom, theme)
+            for fr in videoio.stream_frames(meta, scale_width=scale_w):
+                kcol.add(fr.time, fr.image)
+            kl_notes = keylight.extract_notes(kcol.hist, geom, meta.fps, audio_onsets,
+                                              fill_thr=kcol.sampler.fill_thr)
+            if len(kl_notes) > len(notes):
+                notes = kl_notes
+                use_keylight = True
+                observations = []          # key-highlight path has no bar runs
+                prog({"stage": "reconstruct",
+                      "message": f"{len(notes)} notes (key-highlight)",
+                      "progress": 0.80})
+
     # fuse same-pitch fragments / drop tiny slivers before musical analysis (§48)
     from .events import cleanup_fragments
     before = len(notes)
