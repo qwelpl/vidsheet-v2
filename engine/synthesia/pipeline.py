@@ -222,6 +222,7 @@ def analyze(video_path: str, opts: Options,
     # --- Pass 4: musical analysis -----------------------------------------
     assign_hands(notes, theme)
     if snap_onsets and audio_onsets is not None and len(audio_onsets):
+        audio_onsets = _align_audio_to_visual(notes, audio_onsets)
         refined = snap_onsets(notes, audio_onsets)
         from .audio import drop_unsupported_short
         dropped = drop_unsupported_short(notes, audio_onsets)
@@ -309,6 +310,37 @@ def _hitline_band_height(frames: list[np.ndarray], geom: kb.KeyboardGeometry,
         else:
             break
     return int(h)
+
+
+def _align_audio_to_visual(notes, audio_onsets):
+    """Remove a per-video A/V skew before snapping onsets to the audio.
+
+    The detector times each note from the picture (a bar crossing the strike
+    line, or a key lighting up); the audio attack should coincide, but an encoded
+    video can carry a constant few-ms skew between its audio and video tracks (and
+    some visualisers light the key a hair before the sound). Snapping straight to
+    the audio then shifts every onset by that constant. Measure the robust median
+    offset between the as-detected (visual) onsets and their nearest audio attack
+    and move the audio reference onto the visual frame, so snapping keeps audio's
+    precision without inheriting the skew. Self-calibrating: a cleanly-synced
+    source (and the synthetic test render) measures ~0 and is left unchanged."""
+    ao = np.sort(np.asarray(audio_onsets, dtype=float))
+    if ao.size == 0 or not notes:
+        return audio_onsets
+    offs = []
+    for s in sorted(n.start for n in notes):
+        j = int(np.searchsorted(ao, s))
+        cand = [ao[k] for k in (j - 1, j) if 0 <= k < ao.size]
+        if cand:
+            d = min((s - c for c in cand), key=abs)
+            if abs(d) <= 0.06:          # only real matches, not far misses
+                offs.append(d)
+    if len(offs) < 10:
+        return audio_onsets
+    skew = float(np.median(offs))       # visual - audio; <0 means picture leads
+    if abs(skew) < 0.004:               # within a couple ms: nothing to correct
+        return audio_onsets
+    return ao + skew
 
 
 def _roll_is_composited(median: np.ndarray, geom) -> bool:
