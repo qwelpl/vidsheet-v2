@@ -12,6 +12,12 @@ import io
 import json
 from typing import Optional
 
+try:
+    import numpy as np
+    _HAS_NP = True
+except Exception:  # numpy is always present in practice; guard keeps import safe
+    _HAS_NP = False
+
 from .model import NoteEvent, Hand, midi_to_name
 from .tempo import TempoAnalysis
 from .key import detect_key, build_speller
@@ -110,6 +116,8 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
     # the 16th grid needs 24 divisions/quarter to print those 32nds; otherwise
     # 12 is plenty and avoids fabricating 32nds from jitter. Never go finer than
     # the detected timing can carry (a 32nd below ~one video frame is noise).
+    # 12 and 24 are both divisible by 3, so eighth-note triplets print cleanly in
+    # either (triplet-eighth = divisions/3 ticks).
     fine_sub, divisions = 4, 12
     if len(notes) >= 16:
         starts = [n.start for n in notes]
@@ -130,20 +138,27 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
 
     per_measure = divisions * beats_per_measure
 
+    # Decide, per quarter-note beat, whether its onsets read as straight (duple)
+    # or as an eighth-note triplet. A beat is a triplet only when its onsets sit
+    # on the /3 grid clearly better than on the straight /fine_sub grid - a dense
+    # run that fits neither stays duple, and jitter never flips a beat to triplet.
+    # Committing the whole beat to one grid stops a smooth run being shredded into
+    # dotted-sixteenth+thirty-second scraps because one note got yanked to a
+    # triplet position while its neighbours stayed straight (the "timing is off"
+    # look on triplet-heavy pieces). Triplets print as real tuplets below.
+    triplet_beats = _detect_triplet_beats(notes, period, phase, fine_sub)
+
+    def _beat_is_triplet(beat_i: int) -> bool:
+        return beat_i in triplet_beats
+
     def _raw_div(t: float) -> int:
-        # Rhythmic quantization for notation: snap the beat position to the
-        # chosen straight grid (sixteenth, or thirty-second for a fast piece),
-        # which also covers the coarser values. Rounding straight to the fine
-        # division grid prints onset jitter as ragged values. A triplet position
-        # is used ONLY when the onset is closer to it than to the nearest
-        # straight grid line by a margin wider than detection jitter, so jitter
-        # is never misread as a tuplet. Raw MIDI timing is untouched.
         beat = (t - phase) / period
-        best = round(beat * fine_sub) / fine_sub
-        q3 = round(beat * 3) / 3                    # nearest eighth-triplet
-        if abs(beat - q3) < abs(beat - best) - 0.06:
-            best = q3
-        return int(round(best * divisions))
+        bi = int(np.floor(beat)) if _HAS_NP else int(beat // 1)
+        if bi in triplet_beats:                     # snap to the eighth-triplet grid
+            frac = round((beat - bi) * 3) / 3
+        else:                                       # snap to the straight grid
+            frac = round((beat - bi) * fine_sub) / fine_sub
+        return int(round((bi + frac) * divisions))
 
     # Anchor to the first onset's measure so the score doesn't start with a run
     # of empty leading measures (or negative divisions when a note precedes the
@@ -155,6 +170,14 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
 
     def to_div(t: float) -> int:
         return _raw_div(t) - offset
+
+    # Triplet flag in OUTPUT division coordinates: a position's beat is the
+    # quarter it falls in. The offset is a whole number of measures (hence of
+    # beats), so output beat index = absolute beat index - offset/divisions.
+    beat_shift = offset // divisions
+
+    def _pos_is_triplet(out_pos: int) -> bool:
+        return _beat_is_triplet(out_pos // divisions + beat_shift)
 
     left = sorted([n for n in notes if n.hand != Hand.RIGHT], key=lambda n: n.start)
     right = sorted([n for n in notes if n.hand == Hand.RIGHT], key=lambda n: n.start)
@@ -172,13 +195,44 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
               '  </part-list>\n')
     out.write('  <part id="P1">\n')
     _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
-                    to_div, tempo.bpm, key, spell, divisions // fine_sub)
+                    to_div, tempo.bpm, key, spell, divisions // fine_sub,
+                    _pos_is_triplet)
     out.write('  </part>\n</score-partwise>\n')
     return out.getvalue()
 
 
+def _detect_triplet_beats(notes, period, phase, fine_sub) -> set:
+    """Return the set of quarter-beat indices whose onsets read as an eighth-note
+    triplet. A beat qualifies when it carries at least two onsets that lie on the
+    three-per-beat grid distinctly better than on the straight grid; everything
+    else (including dense runs that fit neither cleanly) stays duple."""
+    if not _HAS_NP or len(notes) < 8:
+        return set()
+    by_beat: dict[int, list[float]] = {}
+    for n in notes:
+        beat = (n.start - phase) / period
+        bi = int(np.floor(beat))
+        by_beat.setdefault(bi, []).append(beat - bi)
+
+    def _cost(fracs, sub):
+        return float(np.mean([abs(f * sub - round(f * sub)) for f in fracs]))
+
+    trip = set()
+    for bi, fracs in by_beat.items():
+        if len(fracs) < 2:
+            continue
+        c3 = _cost(fracs, 3)
+        cs = _cost(fracs, fine_sub)
+        # clear triplet fit and a real margin over the straight grid; the finer
+        # /fine_sub grid is also tested so a beat that is really sixteenths is not
+        # mistaken for a loose triplet.
+        if c3 <= 0.12 and c3 + 0.06 < cs:
+            trip.add(bi)
+    return trip
+
+
 def _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
-                    to_div, bpm, key, spell, grid_step):
+                    to_div, bpm, key, spell, grid_step, pos_is_triplet):
     all_notes = left + right
     if not all_notes:
         end_div = divisions * beats_per_measure
@@ -207,15 +261,15 @@ def _write_measures(out, left, right, divisions, beats_per_measure, beat_type,
         m0, m1 = m * per_measure, (m + 1) * per_measure
         legato = max(2, divisions // 2)  # absorb trailing gaps below an eighth
         _write_staff(out, right, 1, m0, m1, per_measure, to_div, divisions, spell,
-                     grid_step, min_rest_div=legato)
+                     grid_step, pos_is_triplet, min_rest_div=legato)
         out.write(f'      <backup><duration>{per_measure}</duration></backup>\n')
         _write_staff(out, left, 2, m0, m1, per_measure, to_div, divisions, spell,
-                     grid_step, min_rest_div=legato)
+                     grid_step, pos_is_triplet, min_rest_div=legato)
         out.write('    </measure>\n')
 
 
 def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
-                 spell, grid_step, min_rest_div=2):
+                 spell, grid_step, pos_is_triplet, min_rest_div=2):
     # Gather onsets in this measure, grouped by start division (chords). A single
     # MusicXML voice is monophonic, so overlapping notes are flattened: each note
     # is spaced to the NEXT onset, guaranteeing every onset lands on its true
@@ -238,10 +292,20 @@ def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
             pos += grid_step
         events.setdefault(pos, []).append(n)
     positions = sorted(events)
+
+    # First pass: lay out (pos, dur, chord) segments and the rests between them,
+    # exactly as the straight layout did; the tuplet wrapping is a second pass so
+    # grouping logic stays separate from spacing/legato logic.
+    segs: list[dict] = []  # {pos, dur, chord|None}
+
+    def _add_rest(pos, dur):
+        if dur > 0:
+            segs.append({"pos": pos, "dur": dur, "chord": None})
+
     cursor = 0
     for k, pos in enumerate(positions):
         if pos > cursor:
-            _write_rest(out, pos - cursor, staff, divisions)
+            _add_rest(cursor, pos - cursor)
             cursor = pos
         chord = events[pos]
         next_pos = positions[k + 1] if k + 1 < len(positions) else per_measure
@@ -253,19 +317,55 @@ def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
         # 16th-rest between them (staccato pauses peppered through the score).
         if 0 < next_pos - (pos + dur) < min_rest_div:
             dur = next_pos - pos
-        # Snap the printed length to a readable note value (clean type + at most
-        # one dot); any leftover to the next onset falls through to a rest below.
-        dur = _clean_dur(dur, divisions, next_pos - pos)
-        for i, n in enumerate(chord):
-            _write_pitch(out, n, dur, staff, divisions, spell, is_chord=(i > 0))
+        # Snap the printed length to a readable value: a tuplet unit inside a
+        # triplet beat, a clean straight value (power-of-two + single dot) else.
+        dur = _clean_dur(dur, divisions, next_pos - pos,
+                         triplet=pos_is_triplet(m0 + pos))
+        segs.append({"pos": pos, "dur": dur, "chord": chord})
         cursor = pos + dur
-        # a genuine gap (>= min_rest_div) to the next onset stays a rest so the
-        # next onset still lands exactly on its division
-        if cursor < next_pos:
-            _write_rest(out, next_pos - cursor, staff, divisions)
+        if cursor < next_pos:                       # genuine gap stays a rest
+            _add_rest(cursor, next_pos - cursor)
             cursor = next_pos
     if cursor < per_measure:
-        _write_rest(out, per_measure - cursor, staff, divisions)
+        _add_rest(cursor, per_measure - cursor)
+
+    # Second pass: emit, opening a <tuplet> bracket on the first triplet segment
+    # of a beat and closing it on the last segment that ends within that beat.
+    # Every note/rest inside gets the 3:2 <time-modification> so durations stay
+    # mathematically exact and the measure still sums to a whole number of beats.
+    open_tuplet_end = -1  # absolute end division of the currently open tuplet
+    for si, seg in enumerate(segs):
+        abspos = m0 + seg["pos"]
+        trip = pos_is_triplet(abspos) and _is_tuplet_dur(seg["dur"], divisions)
+        start_t = stop_t = False
+        if trip:
+            if seg["pos"] >= open_tuplet_end - m0 or open_tuplet_end < 0:
+                # start a new tuplet spanning this beat
+                beat_start = (abspos // divisions) * divisions
+                open_tuplet_end = beat_start + divisions
+                start_t = True
+            # does the next segment continue this same beat as a tuplet?
+            nxt = segs[si + 1] if si + 1 < len(segs) else None
+            cont = (nxt is not None and pos_is_triplet(m0 + nxt["pos"])
+                    and _is_tuplet_dur(nxt["dur"], divisions)
+                    and (m0 + nxt["pos"]) < open_tuplet_end)
+            if not cont:
+                stop_t = True
+                open_tuplet_end = -1
+        if seg["chord"] is None:
+            if trip:
+                _write_rest(out, seg["dur"], staff, divisions,
+                            triplet=True, tup_start=start_t, tup_stop=stop_t)
+            else:
+                # split a straight gap into clean rest values on metric
+                # boundaries instead of one rest whose type lies about its length
+                _emit_clean_rests(out, seg["pos"], seg["dur"], staff, divisions)
+        else:
+            for i, n in enumerate(seg["chord"]):
+                _write_pitch(out, n, seg["dur"], staff, divisions, spell,
+                             is_chord=(i > 0), triplet=trip,
+                             tup_start=(start_t and i == 0),
+                             tup_stop=(stop_t and i == 0))
 
 
 def _clean_values(divisions: int) -> list[tuple[int, str, int]]:
@@ -286,15 +386,39 @@ def _clean_values(divisions: int) -> list[tuple[int, str, int]]:
     return out
 
 
-def _clean_dur(dur: int, divisions: int, max_dur: int) -> int:
+def _clean_dur(dur: int, divisions: int, max_dur: int, triplet: bool = False) -> int:
     """Snap a raw duration to the nearest readable note value that still fits the
     space to the next onset, so every printed note is a clean type/dot instead of
     a ragged value whose ``<type>`` contradicts its ``<duration>``. Any remainder
-    becomes a rest, keeping onsets exactly on their divisions."""
+    becomes a rest, keeping onsets exactly on their divisions.
+
+    In a triplet beat the eighth-triplet unit (``divisions/3``) and its double are
+    added to the candidates, so a note that fills one or two triplet slots keeps
+    its true length instead of being rounded to a dotted-sixteenth."""
     cand = [v for v, _, _ in _clean_values(divisions) if v <= max_dur]
+    if triplet:
+        u = divisions // 3
+        for tv in (u, 2 * u):
+            if 0 < tv <= max_dur and tv not in cand:
+                cand.append(tv)
     if not cand:
         return max(1, min(dur, max_dur))
     return min(cand, key=lambda v: abs(v - dur))
+
+
+def _is_tuplet_dur(dur: int, divisions: int) -> bool:
+    """True when a duration is an eighth-triplet unit (one or two slots) that must
+    print with a 3:2 time-modification. A full-beat (quarter) or longer note in a
+    triplet beat is an ordinary straight value and stays untupleted."""
+    u = divisions // 3
+    return u > 0 and dur in (u, 2 * u)
+
+
+def _tuplet_type(dur: int, divisions: int) -> str:
+    """Printed note type for a tuplet duration: the straight type whose value is
+    1.5x the tuplet duration (a triplet eighth prints as an eighth, a note of two
+    triplet slots as a quarter)."""
+    return _note_value(dur * 3 // 2, divisions)[0]
 
 
 def _note_value(dur: int, divisions: int) -> tuple[str, int]:
@@ -314,7 +438,25 @@ def _dur_type(dur: int, divisions: int) -> str:
     return _note_value(dur, divisions)[0]
 
 
-def _write_pitch(out, n, dur, staff, divisions, spell, is_chord):
+def _time_mod_xml(indent: str) -> str:
+    return (f'{indent}<time-modification><actual-notes>3</actual-notes>'
+            f'<normal-notes>2</normal-notes><normal-type>eighth</normal-type>'
+            f'</time-modification>\n')
+
+
+def _tuplet_notations(tup_start: bool, tup_stop: bool) -> str:
+    inner = ''
+    if tup_start:
+        inner += '<tuplet type="start" bracket="yes"/>'
+    if tup_stop:
+        inner += '<tuplet type="stop"/>'
+    if not inner:
+        return ''
+    return f'        <notations>{inner}</notations>\n'
+
+
+def _write_pitch(out, n, dur, staff, divisions, spell, is_chord,
+                 triplet=False, tup_start=False, tup_stop=False):
     step, alter, octave = spell(n.midi)
     out.write('      <note>\n')
     if is_chord:
@@ -327,18 +469,57 @@ def _write_pitch(out, n, dur, staff, divisions, spell, is_chord):
     out.write('        </pitch>\n')
     out.write(f'        <duration>{dur}</duration>\n')
     out.write(f'        <voice>{staff}</voice>\n')
-    typ, dots = _note_value(dur, divisions)
+    if triplet:
+        typ, dots = _tuplet_type(dur, divisions), 0
+    else:
+        typ, dots = _note_value(dur, divisions)
     out.write(f'        <type>{typ}</type>\n')
     out.write('        <dot/>\n' * dots)
+    if triplet:
+        out.write(_time_mod_xml('        '))
     out.write(f'        <staff>{staff}</staff>\n')
+    out.write(_tuplet_notations(tup_start, tup_stop))
     out.write('      </note>\n')
 
 
-def _write_rest(out, dur, staff, divisions):
-    typ, dots = _note_value(dur, divisions)
+def _emit_clean_rests(out, pos, dur, staff, divisions):
+    """Emit a straight gap as one or more clean rest values, each sitting on a
+    boundary that matches its length, so no rest's ``<type>`` contradicts its
+    duration. Every grid gap is a multiple of the smallest clean value, so this
+    always terminates exactly."""
+    vals = [v for v, _, _ in _clean_values(divisions)]  # longest first
+    cur, end = pos, pos + dur
+    while cur < end:
+        rem = end - cur
+        chosen = None
+        for v in vals:                 # prefer a value aligned to its own grid
+            if v <= rem and cur % v == 0:
+                chosen = v
+                break
+        if chosen is None:             # not aligned: take the largest that fits
+            for v in vals:
+                if v <= rem:
+                    chosen = v
+                    break
+        if chosen is None:             # sub-value sliver (shouldn't occur)
+            chosen = rem
+        _write_rest(out, chosen, staff, divisions)
+        cur += chosen
+
+
+def _write_rest(out, dur, staff, divisions,
+                triplet=False, tup_start=False, tup_stop=False):
+    if triplet:
+        typ, dots = _tuplet_type(dur, divisions), 0
+    else:
+        typ, dots = _note_value(dur, divisions)
     out.write('      <note>\n        <rest/>\n')
     out.write(f'        <duration>{dur}</duration>\n')
     out.write(f'        <voice>{staff}</voice>\n')
     out.write(f'        <type>{typ}</type>\n')
     out.write('        <dot/>\n' * dots)
-    out.write(f'        <staff>{staff}</staff>\n      </note>\n')
+    if triplet:
+        out.write(_time_mod_xml('        '))
+    out.write(f'        <staff>{staff}</staff>\n')
+    out.write(_tuplet_notations(tup_start, tup_stop))
+    out.write('      </note>\n')
