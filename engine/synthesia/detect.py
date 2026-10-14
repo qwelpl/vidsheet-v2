@@ -134,8 +134,10 @@ class LaneSampler:
         m = np.zeros(hue.shape, dtype=bool)
         for c in t.clusters:
             if c.achromatic:
-                # white/grey hand: bright and unsaturated, matched by low sat
-                m |= (sat < t.achromatic_sat_max) & (val >= t.val_min)
+                # white/grey hand: bright and unsaturated. The high value floor
+                # rejects dim low-sat background/glow that would otherwise fill
+                # every lane with a permanent phantom note.
+                m |= (sat < t.achromatic_sat_max) & (val >= t.achromatic_val_min)
                 continue
             dh = np.minimum(np.abs(hue - c.hue), 180 - np.abs(hue - c.hue))
             m |= (dh <= 20) & (sat >= t.sat_min) & (val >= t.val_min)

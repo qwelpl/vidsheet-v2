@@ -32,6 +32,7 @@ class ThemeModel:
     val_min: int
     rainbow: bool = False
     achromatic_sat_max: int = 0   # pixels below this sat are white-hand (0 = none)
+    achromatic_val_min: int = 0   # ...and at/above this brightness (rejects dim bg)
 
     def classify(self, hue: float, sat: float, val: float) -> Optional[int]:
         """Return index of the closest colour cluster, or None if the pixel is
@@ -42,7 +43,8 @@ class ThemeModel:
         # against a bright background-subtracted pixel, not by hue distance (which
         # is meaningless when a pixel is unsaturated). Route it before the sat gate
         # that would otherwise reject it as background.
-        if self.achromatic_sat_max > 0 and sat < self.achromatic_sat_max:
+        if (self.achromatic_sat_max > 0 and sat < self.achromatic_sat_max
+                and val >= self.achromatic_val_min):
             for i, c in enumerate(self.clusters):
                 if c.achromatic:
                     return i
@@ -64,6 +66,7 @@ class ThemeModel:
         return {
             "sat_min": self.sat_min, "val_min": self.val_min, "rainbow": self.rainbow,
             "achromatic_sat_max": self.achromatic_sat_max,
+            "achromatic_val_min": self.achromatic_val_min,
             "clusters": [
                 {"hue": c.hue, "sat": c.sat, "val": c.val, "weight": c.weight,
                  "hand_hint": c.hand_hint, "achromatic": c.achromatic}
@@ -257,6 +260,7 @@ def detect_theme(
     # Comparing the saturation of that whole bright-note population against the
     # chromatic colour tells white from chromatic.
     achro_max = 0
+    achro_vmin = 0
     chroma_sat = min((c.sat for c in kept), default=0.0)
     if kept and chroma_sat >= 60:
         allS, allV = [], []
@@ -282,13 +286,18 @@ def detect_theme(
             if (white_share >= 0.20
                     and float(np.median(S2[white_m])) <= 40):
                 achro_max = int(np.clip(s_split, 20, max(21, chroma_sat - 15)))
+                white_val = float(np.median(V2[white_m]))
+                # A white note is BRIGHT (its own core value); dim low-saturation
+                # background/glow particles also clear the sat gate and would
+                # otherwise register as a permanent note in every lane. Floor the
+                # match near the white core so only genuine lit bars pass.
+                achro_vmin = int(np.clip(0.75 * white_val, val_min, 245))
                 kept.append(ColorCluster(
                     hue=0.0, sat=float(np.median(S2[white_m])),
-                    val=float(np.median(V2[white_m])),
-                    weight=white_share, achromatic=True))
+                    val=white_val, weight=white_share, achromatic=True))
 
     return ThemeModel(clusters=kept, sat_min=final_sat_min, val_min=val_min,
-                      achromatic_sat_max=achro_max)
+                      achromatic_sat_max=achro_max, achromatic_val_min=achro_vmin)
 
 
 def _otsu(x: np.ndarray) -> int:
