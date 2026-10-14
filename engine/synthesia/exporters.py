@@ -253,6 +253,9 @@ def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
         # 16th-rest between them (staccato pauses peppered through the score).
         if 0 < next_pos - (pos + dur) < min_rest_div:
             dur = next_pos - pos
+        # Snap the printed length to a readable note value (clean type + at most
+        # one dot); any leftover to the next onset falls through to a rest below.
+        dur = _clean_dur(dur, divisions, next_pos - pos)
         for i, n in enumerate(chord):
             _write_pitch(out, n, dur, staff, divisions, spell, is_chord=(i > 0))
         cursor = pos + dur
@@ -265,26 +268,46 @@ def _write_staff(out, notes, staff, m0, m1, per_measure, to_div, divisions,
         _write_rest(out, per_measure - cursor, staff, divisions)
 
 
-def _note_value(dur: int, divisions: int) -> tuple[str, int]:
-    """Map a duration (in divisions, 12 per quarter) to a (type, dots) pair so
-    a dotted-eighth/quarter/half prints with its dot instead of a bare note
-    whose <duration> contradicts its <type>. The finest clean value on the grid
-    is a sixteenth; a dot adds half (one dot) or three-quarters (two dots) of
-    the base. A duration that is not a clean dotted value falls back to the
-    plain base type (a residual tie is not modelled)."""
+def _clean_values(divisions: int) -> list[tuple[int, str, int]]:
+    """Readable note durations in divisions: each power-of-two note value and its
+    single-dotted (x1.5) form - the only rhythms a player expects to read. No
+    double dots. Longest first."""
     q = divisions
     bases = [(4 * q, "whole"), (2 * q, "half"), (q, "quarter"),
              (max(1, q // 2), "eighth"), (max(1, q // 4), "16th")]
-    if q >= 24:                       # a 32nd is a clean value only at >=24/quarter
+    if q >= 24:
         bases.append((q // 8, "32nd"))
+    out: list[tuple[int, str, int]] = []
     for b, name in bases:
-        if dur >= b:
-            if dur * 2 == b * 3:      # dotted  (base * 1.5)
-                return name, 1
-            if dur * 4 == b * 7:      # double-dotted (base * 1.75)
-                return name, 2
+        out.append((b, name, 0))
+        if b % 2 == 0:                       # dotted form only if it is integral
+            out.append((b * 3 // 2, name, 1))
+    out.sort(key=lambda x: -x[0])
+    return out
+
+
+def _clean_dur(dur: int, divisions: int, max_dur: int) -> int:
+    """Snap a raw duration to the nearest readable note value that still fits the
+    space to the next onset, so every printed note is a clean type/dot instead of
+    a ragged value whose ``<type>`` contradicts its ``<duration>``. Any remainder
+    becomes a rest, keeping onsets exactly on their divisions."""
+    cand = [v for v, _, _ in _clean_values(divisions) if v <= max_dur]
+    if not cand:
+        return max(1, min(dur, max_dur))
+    return min(cand, key=lambda v: abs(v - dur))
+
+
+def _note_value(dur: int, divisions: int) -> tuple[str, int]:
+    """Map a (already cleaned) duration to a (type, dots) pair. Matches the exact
+    readable values; a non-matching residual falls back to the nearest base type
+    with no dot (never a double dot)."""
+    for v, name, dots in _clean_values(divisions):
+        if dur == v:
+            return name, dots
+    for v, name, _ in _clean_values(divisions):
+        if dur >= v:
             return name, 0
-    return bases[-1][1], 0
+    return "16th", 0
 
 
 def _dur_type(dur: int, divisions: int) -> str:
