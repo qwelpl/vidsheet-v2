@@ -65,6 +65,16 @@ def estimate_tempo(notes: list[NoteEvent], fps: float) -> TempoAnalysis:
         if c > best_conc:
             best_conc, best_period, phase = c, period, ph
 
+    # A denser grid always fits at least as well, so the sharpest-concentration
+    # tempo is prone to a double-tempo error: a piece of mostly eighth notes reads
+    # as mostly quarters one octave up, with the real notes sitting on the beat and
+    # the faster grid lines populated only by onset jitter. Fold the tempo down
+    # while the lines that WOULD vanish on halving (the odd sixteenth positions)
+    # carry only a sparse jitter tail - but keep the fast tempo when those lines
+    # hold real notes (a genuinely fast piece of sixteenth runs), so the two are
+    # told apart by the data, not a fixed cutoff (§19).
+    best_period, phase, best_conc = _fold_double_tempo(onsets, best_period, phase,
+                                                       best_conc)
     bpm = 60.0 / best_period
     conf = float(np.clip(best_conc, 0.2, 0.98))
 
@@ -73,6 +83,36 @@ def estimate_tempo(notes: list[NoteEvent], fps: float) -> TempoAnalysis:
     return TempoAnalysis(bpm=float(bpm), beat_period=float(best_period),
                          beat_phase=float(phase), time_signature=(4, 4),
                          segments=[seg], confidence=conf)
+
+
+def _odd_line_frac(onsets: np.ndarray, period: float, phase: float,
+                   sub: int = 4, tol: float = 0.025) -> float:
+    """Of the onsets that sit on the sixteenth grid, the fraction landing on an
+    ODD grid line (a half-beat-offset position that disappears when the tempo is
+    halved). A double-tempo error leaves these lines nearly empty - the real
+    notes are on the even lines and only jitter strays onto the odd ones - whereas
+    a genuinely fast piece populates them with real sixteenths."""
+    step = period / sub
+    g = np.round((onsets - phase) / step)
+    err = np.abs((onsets - phase) / step - g) * step
+    on = err <= tol
+    if on.sum() == 0:
+        return 1.0
+    return float((on & (g.astype(int) % 2 != 0)).sum()) / float(on.sum())
+
+
+def _fold_double_tempo(onsets: np.ndarray, period: float, phase: float,
+                       conc: float, min_bpm: float = 55.0,
+                       odd_thresh: float = 0.2) -> tuple[float, float, float]:
+    """Halve the tempo (double ``period``) while the faster grid's odd lines carry
+    only a sparse jitter tail, so a mostly-eighth-note piece detected an octave too
+    fast is brought back to its true beat. Stops as soon as the odd lines are
+    populated (a real fast piece) or the tempo would drop below ``min_bpm``."""
+    while _odd_line_frac(onsets, period, phase) < odd_thresh and \
+            60.0 / (period * 2.0) >= min_bpm:
+        period *= 2.0
+        conc, phase = _grid_conc(onsets, period)
+    return period, phase, conc
 
 
 def _grid_conc(onsets: np.ndarray, period: float, sub: int = 4,
