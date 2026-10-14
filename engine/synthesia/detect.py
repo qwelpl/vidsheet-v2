@@ -133,6 +133,10 @@ class LaneSampler:
             return val >= t.val_min
         m = np.zeros(hue.shape, dtype=bool)
         for c in t.clusters:
+            if c.achromatic:
+                # white/grey hand: bright and unsaturated, matched by low sat
+                m |= (sat < t.achromatic_sat_max) & (val >= t.val_min)
+                continue
             dh = np.minimum(np.abs(hue - c.hue), 180 - np.abs(hue - c.hue))
             m |= (dh <= 20) & (sat >= t.sat_min) & (val >= t.val_min)
         return m
@@ -156,7 +160,7 @@ class LaneSampler:
                     seg_s = sat[y:j][m]
                 else:
                     seg_h = hue[y:j].ravel(); seg_v = val[y:j].ravel(); seg_s = sat[y:j].ravel()
-                cluster = self._dominant_cluster(seg_h)
+                cluster = self._dominant_cluster(seg_h, seg_s)
                 runs.append(LaneRun(
                     y_top=float(y), y_bottom=float(j - 1),
                     cluster=cluster,
@@ -185,12 +189,19 @@ class LaneSampler:
             y = j
         return out
 
-    def _dominant_cluster(self, hue) -> int:
+    def _dominant_cluster(self, hue, sat=None) -> int:
         t = self.theme
         if t.rainbow or t.sat_min == 0:
             return 0
         counts = np.zeros(len(t.clusters))
         for i, c in enumerate(t.clusters):
+            if c.achromatic:
+                # white hand: pixels below the achromatic saturation ceiling
+                counts[i] = int((sat < t.achromatic_sat_max).sum()) if sat is not None else 0
+                continue
             dh = np.minimum(np.abs(hue - c.hue), 180 - np.abs(hue - c.hue))
-            counts[i] = int((dh <= 20).sum())
+            chro = (dh <= 20)
+            if sat is not None:
+                chro = chro & (sat >= t.sat_min)   # don't credit white pixels to a hue
+            counts[i] = int(chro.sum())
         return int(counts.argmax())

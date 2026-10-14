@@ -38,6 +38,8 @@ class KeyLightSampler:
         self.kbbot = int(round(g.keyboard_bottom))
         self.kbh = max(4, self.kbbot - self.kbtop)
         self.hues = [c.hue for c in self.theme.clusters]
+        self.achromatic = [c.achromatic for c in self.theme.clusters]
+        self.achro_sat_max = self.theme.achromatic_sat_max
         # A pale hand colour (e.g. a lavender right hand at saturation ~56) never
         # clears a fixed sat_min of 80, so its lit keys read as unlit or get
         # misattributed to the vivid hand's cluster - collapsing hand assignment.
@@ -79,8 +81,13 @@ class KeyLightSampler:
             v = reg[..., 2].astype(np.float32)
             best_frac, best_c = 0.0, -1
             for ci, hue in enumerate(self.hues):
-                dh = np.minimum(np.abs(h - hue), 180 - np.abs(h - hue))
-                m = (dh <= 18) & (s >= self.sat_min) & (v >= self.val_min)
+                if self.achromatic[ci]:
+                    # white/grey hand: lit key is bright and unsaturated, matched
+                    # by low saturation rather than a (meaningless) hue.
+                    m = (s < self.achro_sat_max) & (v >= self.val_min)
+                else:
+                    dh = np.minimum(np.abs(h - hue), 180 - np.abs(h - hue))
+                    m = (dh <= 18) & (s >= self.sat_min) & (v >= self.val_min)
                 frac = float(m.mean())
                 if frac > best_frac:
                     best_frac, best_c = frac, ci

@@ -22,6 +22,7 @@ class ColorCluster:
     val: float
     weight: float       # relative pixel mass
     hand_hint: Optional[str] = None  # filled by pipeline
+    achromatic: bool = False   # white/grey note colour (matched by low sat, not hue)
 
 
 @dataclass
@@ -30,16 +31,30 @@ class ThemeModel:
     sat_min: int
     val_min: int
     rainbow: bool = False
+    achromatic_sat_max: int = 0   # pixels below this sat are white-hand (0 = none)
 
     def classify(self, hue: float, sat: float, val: float) -> Optional[int]:
         """Return index of the closest colour cluster, or None if the pixel is
         not note-like (too desaturated / dark -> background or glow tail)."""
-        if sat < self.sat_min or val < self.val_min:
+        if val < self.val_min:
+            return None
+        # A white/grey hand carries no hue, so it is matched by its LOW saturation
+        # against a bright background-subtracted pixel, not by hue distance (which
+        # is meaningless when a pixel is unsaturated). Route it before the sat gate
+        # that would otherwise reject it as background.
+        if self.achromatic_sat_max > 0 and sat < self.achromatic_sat_max:
+            for i, c in enumerate(self.clusters):
+                if c.achromatic:
+                    return i
+            return None
+        if sat < self.sat_min:
             return None
         if self.rainbow:
             return 0  # a single rainbow class; hand comes from position
         best, best_d = None, 1e9
         for i, c in enumerate(self.clusters):
+            if c.achromatic:
+                continue
             dh = min(abs(hue - c.hue), 180 - abs(hue - c.hue))
             if dh < best_d:
                 best_d, best = dh, i
@@ -48,9 +63,10 @@ class ThemeModel:
     def to_dict(self) -> dict:
         return {
             "sat_min": self.sat_min, "val_min": self.val_min, "rainbow": self.rainbow,
+            "achromatic_sat_max": self.achromatic_sat_max,
             "clusters": [
                 {"hue": c.hue, "sat": c.sat, "val": c.val, "weight": c.weight,
-                 "hand_hint": c.hand_hint}
+                 "hand_hint": c.hand_hint, "achromatic": c.achromatic}
                 for c in self.clusters
             ],
         }
@@ -225,7 +241,54 @@ def detect_theme(
     # admitted while the near-zero background stays out. Never above the cap.
     pale = min((c.sat for c in kept), default=cap_sat_min)
     final_sat_min = int(np.clip(0.55 * pale, 30, cap_sat_min))
-    return ThemeModel(clusters=kept, sat_min=final_sat_min, val_min=val_min)
+
+    # A WHITE/grey hand (common second hand: one chromatic, one white) carries no
+    # hue, so the hue clustering above cannot see it and the theme collapses to one
+    # colour - then hand assignment has no colour to split on and falls back to a
+    # naive pitch split that scrambles the two hands wherever their ranges overlap.
+    # Detect it as a separate achromatic cluster: a substantial mass of bright note
+    # pixels whose saturation sits well below the chromatic colour(s). The split is
+    # the valley between the two saturation populations, found by Otsu, so nothing
+    # is hard-coded; require real mass on the white side and a clearly chromatic
+    # colour on the other so a single-colour theme is never torn into two.
+    # The ``floor`` sat gate above drops near-zero-saturation pixels, so a white
+    # hand is absent from S/V entirely. Sample it on its own terms: bright pixels
+    # that move against the still background (the note bars) regardless of hue.
+    # Comparing the saturation of that whole bright-note population against the
+    # chromatic colour tells white from chromatic.
+    achro_max = 0
+    chroma_sat = min((c.sat for c in kept), default=0.0)
+    if kept and chroma_sat >= 60:
+        allS, allV = [], []
+        for hsv in frames_hsv_roll:
+            s = hsv[..., 1].ravel(); v = hsv[..., 2].ravel()
+            mm = v >= max(val_min, 120)
+            if bg is not None:
+                bv = bg[..., 2].ravel().astype(np.int16)
+                mm &= np.abs(v.astype(np.int16) - bv) >= 35
+            allS.append(s[mm]); allV.append(v[mm])
+        S2 = np.concatenate(allS) if allS else np.array([], np.uint8)
+        V2 = np.concatenate(allV) if allV else np.array([], np.uint8)
+        if S2.size >= 400:
+            # Split white from chromatic at the midpoint between a colourless bar
+            # (saturation ~0) and the detected chromatic colour; derived from that
+            # colour, so nothing is hard-coded.
+            s_split = 0.5 * chroma_sat
+            white_m = S2 < s_split
+            white_share = float(white_m.sum()) / float(S2.size)
+            # A real white hand is a substantial mass of bright pixels sitting well
+            # below the chromatic colour's saturation; guards keep a single-colour
+            # (chromatic-only) theme from being torn into two.
+            if (white_share >= 0.20
+                    and float(np.median(S2[white_m])) <= 40):
+                achro_max = int(np.clip(s_split, 20, max(21, chroma_sat - 15)))
+                kept.append(ColorCluster(
+                    hue=0.0, sat=float(np.median(S2[white_m])),
+                    val=float(np.median(V2[white_m])),
+                    weight=white_share, achromatic=True))
+
+    return ThemeModel(clusters=kept, sat_min=final_sat_min, val_min=val_min,
+                      achromatic_sat_max=achro_max)
 
 
 def _otsu(x: np.ndarray) -> int:
