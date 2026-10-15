@@ -195,15 +195,29 @@ class LaneSampler:
         t = self.theme
         if t.rainbow or t.sat_min == 0:
             return 0
+        hue = np.asarray(hue, dtype=np.float32)
         counts = np.zeros(len(t.clusters))
+        chrom_idx = [i for i, c in enumerate(t.clusters) if not c.achromatic]
+        if chrom_idx and hue.size:
+            # Assign each pixel to its NEAREST chromatic cluster, not to every
+            # cluster within a fixed radius. Two hands can be closer in hue than
+            # that radius (a red hand at 3 and an orange hand at 11 are 8 apart,
+            # well inside 20), and crediting every such pixel to BOTH clusters
+            # makes argmax collapse to the lower-indexed hand - putting all notes
+            # on one hand. Nearest-cluster keeps the two apart.
+            dists = np.stack([
+                np.minimum(np.abs(hue - t.clusters[i].hue),
+                           180 - np.abs(hue - t.clusters[i].hue))
+                for i in chrom_idx
+            ])  # (n_chrom, n_pixels)
+            nearest = np.argmin(dists, axis=0)
+            valid = dists.min(axis=0) <= 20
+            if sat is not None:
+                valid = valid & (np.asarray(sat) >= t.sat_min)  # not a white pixel
+            for k, ci in enumerate(chrom_idx):
+                counts[ci] = int(((nearest == k) & valid).sum())
         for i, c in enumerate(t.clusters):
             if c.achromatic:
                 # white hand: pixels below the achromatic saturation ceiling
                 counts[i] = int((sat < t.achromatic_sat_max).sum()) if sat is not None else 0
-                continue
-            dh = np.minimum(np.abs(hue - c.hue), 180 - np.abs(hue - c.hue))
-            chro = (dh <= 20)
-            if sat is not None:
-                chro = chro & (sat >= t.sat_min)   # don't credit white pixels to a hue
-            counts[i] = int(chro.sum())
         return int(counts.argmax())
