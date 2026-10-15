@@ -81,18 +81,35 @@ class KeyLightSampler:
             s = reg[..., 1].astype(np.float32)
             v = reg[..., 2].astype(np.float32)
             best_frac, best_c = 0.0, -1
-            for ci, hue in enumerate(self.hues):
-                if self.achromatic[ci]:
+            # Chromatic clusters: assign each lit pixel to its NEAREST hand hue,
+            # then score each cluster by the share of the key it uniquely owns.
+            # Scoring each cluster by every pixel within a fixed hue radius instead
+            # double-counts pixels when two hands have close colours (a red hand at
+            # 3 and an orange hand at 11 are only 8 apart, well inside the radius):
+            # a key lit in either colour then matches both, the tie breaks to the
+            # first cluster, and every key collapses onto one hand (§7, §16).
+            chrom = [ci for ci, a in enumerate(self.achromatic) if not a]
+            if chrom:
+                lit = (s >= self.sat_min) & (v >= self.val_min)
+                dists = np.stack([
+                    np.minimum(np.abs(h - self.hues[ci]), 180 - np.abs(h - self.hues[ci]))
+                    for ci in chrom
+                ])
+                nearest = np.argmin(dists, axis=0)
+                within = dists.min(axis=0) <= 18
+                for k, ci in enumerate(chrom):
+                    frac = float((lit & within & (nearest == k)).mean())
+                    if frac > best_frac:
+                        best_frac, best_c = frac, ci
+            for ci, a in enumerate(self.achromatic):
+                if a:
                     # white/grey hand: lit key is bright and unsaturated, matched
                     # by low saturation (not a meaningless hue) and a high value
                     # floor so dim low-sat background does not read as lit.
                     m = (s < self.achro_sat_max) & (v >= self.achro_val_min)
-                else:
-                    dh = np.minimum(np.abs(h - hue), 180 - np.abs(h - hue))
-                    m = (dh <= 18) & (s >= self.sat_min) & (v >= self.val_min)
-                frac = float(m.mean())
-                if frac > best_frac:
-                    best_frac, best_c = frac, ci
+                    frac = float(m.mean())
+                    if frac > best_frac:
+                        best_frac, best_c = frac, ci
             out[midi] = (best_c, best_frac)
         return out
 
