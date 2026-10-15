@@ -122,7 +122,19 @@ def detect_theme(
     hues = []
     sats = []
     vals = []
+    # Per-hue horizontal centroid, saturation-weighted. Two hands with close hues
+    # (e.g. a red right hand and an orange left hand only ~8 apart) cannot be told
+    # apart by hue alone, but they separate across the keyboard - the left hand's
+    # colour sits left, the right hand's right. The two brightness tiers of ONE
+    # hand, by contrast, share the same columns. This centroid lets the peak
+    # selection below keep two close-but-distinct hands while still merging a
+    # single hand's tiers (§7, §16).
+    col_sum = np.zeros(180, dtype=np.float64)
+    col_wt = np.zeros(180, dtype=np.float64)
+    width = 0
     for hsv in frames_hsv_roll:
+        hh, ww = hsv.shape[:2]
+        width = ww
         h = hsv[..., 0].ravel()
         s = hsv[..., 1].ravel()
         v = hsv[..., 2].ravel()
@@ -131,8 +143,15 @@ def detect_theme(
             dv = np.abs(v.astype(np.int16) - bg[..., 2].ravel().astype(np.int16))
             ds = np.abs(s.astype(np.int16) - bg[..., 1].ravel().astype(np.int16))
             m &= (dv >= 35) | (ds >= 40)
-        hues.append(h[m])
-        sats.append(s[m])
+        hm = h[m]
+        sm = s[m]
+        if hm.size:
+            cols = np.tile(np.arange(ww), hh)[m].astype(np.float64)
+            wsq = (sm.astype(np.float64) / 255.0) ** 2
+            np.add.at(col_sum, hm, wsq * cols)
+            np.add.at(col_wt, hm, wsq)
+        hues.append(hm)
+        sats.append(sm)
         vals.append(v[m])
     H = np.concatenate(hues) if hues else np.array([], dtype=np.uint8)
     if H.size < 100:
@@ -194,7 +213,39 @@ def detect_theme(
     # kept slots, dropping the other hand's colour entirely (a pale, less
     # saturated hand is already under-weighted by the sat^2 hue weighting), which
     # collapsed hand assignment to a naive pitch split.
-    peaks = _hue_peaks(hist, min_sep=22, max_peaks=3)
+    # Find fine-grained peaks, then merge ones closer than the classify radius
+    # UNLESS they separate across the keyboard - two close hues at clearly
+    # different horizontal centroids are two hands (red right / orange left), not
+    # one hand's two brightness tiers (which share columns).
+    def _peak_col(p: int) -> float:
+        # Tight window so two close peaks measure DISJOINT pixels; a wide window
+        # would blend their columns together and hide the separation.
+        idx = [(p + d) % 180 for d in range(-3, 4)]
+        w = col_wt[idx].sum()
+        return float(col_sum[idx].sum() / w) if w > 0 else -1.0
+
+    raw_peaks = _hue_peaks(hist, min_sep=6, max_peaks=8)
+    peaks: list[int] = []
+    for p in raw_peaks:
+        close = [q for q in peaks
+                 if min(abs(p - q), 180 - abs(p - q)) < 22]
+        if not close:
+            peaks.append(p)
+        else:
+            cp = _peak_col(p)
+            # keep as a separate hand only if it carries real mass AND its colour
+            # sits in a clearly different part of the keyboard than the close peak
+            spatially_distinct = (
+                cp >= 0 and width > 0
+                and hist[p] >= 0.30 * hist[peaks[0]]
+                and any(_peak_col(q) >= 0
+                        and abs(cp - _peak_col(q)) >= 0.15 * width
+                        for q in close)
+            )
+            if spatially_distinct:
+                peaks.append(p)
+        if len(peaks) >= 3:
+            break
     clusters = []
     total = hist.sum()
     for p in peaks:
@@ -262,7 +313,12 @@ def detect_theme(
     achro_max = 0
     achro_vmin = 0
     chroma_sat = min((c.sat for c in kept), default=0.0)
-    if kept and chroma_sat >= 60:
+    # Only look for a white hand when at most one chromatic hand was found - the
+    # white-hand case is "one colour + one white". With two chromatic hands
+    # already separated, bright low-saturation pixels are the hands/keys/glow, not
+    # a third hand, so adding an achromatic cluster would steal their notes.
+    n_chromatic = sum(1 for c in kept if not c.achromatic)
+    if kept and chroma_sat >= 60 and n_chromatic < 2:
         allS, allV = [], []
         for hsv in frames_hsv_roll:
             s = hsv[..., 1].ravel(); v = hsv[..., 2].ravel()
