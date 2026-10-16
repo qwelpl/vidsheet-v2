@@ -325,41 +325,38 @@ def _restrike_times(fill: list[float], times: list[float], i: int, last_lit: int
                     frame_dt: float, min_frames: int) -> list[float]:
     """Split points inside a lit run [i..last_lit] from the coverage envelope.
 
-    A re-strike shows as a prominent trough: coverage climbs to a peak, dips to a
-    local minimum, then recovers. We require the dip to reach at most ``dip_frac``
-    of the surrounding peak and to recover to ``rise_frac`` of it, and consecutive
-    splits to be at least ``min_sep`` frames apart, so ordinary flicker and a
-    single sustained note never split."""
-    dip_frac = 0.6      # trough must fall to <=60% of the local peak
-    rise_frac = 0.85    # ...and climb back to >=85% of it to count as a new hit
+    A re-strike shows as a prominent trough: coverage dips to a local minimum,
+    well below the surrounding coverage, then recovers. The dip must fall to at
+    most ``dip_frac`` of the LOCAL coverage on each side and recover to at least
+    ``rise_frac`` of the level before it, and consecutive splits must be at least
+    ``min_sep`` frames apart, so ordinary flicker and a sustained note never
+    split. Measuring against the local level on each side (not a running peak over
+    the whole run) is essential: one frame a touch brighter than a long plateau
+    would otherwise set the peak just above the plateau, and every later recovery
+    would fall short of it, so a continuously-lit repeat's dips were all missed."""
+    dip_frac = 0.6      # trough must fall to <=60% of the local coverage
+    rise_frac = 0.85    # ...and climb back to >=85% of the pre-dip level
     min_sep = max(min_frames, 2)
+    win = max(3, min_sep + 1)
     seg = fill[i:last_lit + 1]
     m = len(seg)
     if m < 2 * min_sep:
         return []
     splits: list[float] = []
-    peak = seg[0]
-    last_split_k = 0
+    last_split_k = -min_sep
     k = 1
     while k < m - 1:
-        if seg[k] >= peak:
-            peak = seg[k]
-            k += 1
-            continue
-        # descending below the running peak: walk to the local minimum
-        j = k
-        vmin, kmin = seg[k], k
-        while j < m and seg[j] < peak:
-            if seg[j] < vmin:
-                vmin, kmin = seg[j], j
-            j += 1
-        recovered = j < m and seg[j] >= peak * rise_frac
-        deep = vmin <= peak * dip_frac
-        if recovered and deep and (kmin - last_split_k) >= min_sep:
-            splits.append(times[i + kmin])
-            last_split_k = kmin
-            peak = seg[j]
-        k = max(j, k + 1)
+        # a local minimum: not higher than the frame before, strictly below after
+        if seg[k] <= seg[k - 1] and seg[k] < seg[k + 1]:
+            pre = max(seg[max(0, k - win):k + 1])
+            post = max(seg[k:min(m, k + win + 1)])
+            base = min(pre, post)
+            if (base > 0 and seg[k] <= dip_frac * base
+                    and post >= rise_frac * pre
+                    and (k - last_split_k) >= min_sep):
+                splits.append(times[i + k])
+                last_split_k = k
+        k += 1
     return splits
 
 
