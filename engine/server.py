@@ -89,13 +89,10 @@ def _run_job(job: Job, source: str, is_url: bool):
 
         opts = Options.for_preset(job.preset)
         result = analyze(job.video_path, opts, progress)
-        # persist exports
-        write_midi(os.path.join(d, "reconstruction.mid"), result.notes, result.tempo)
-        write_csv(os.path.join(d, "notes.csv"), result.notes)
-        write_musicxml(os.path.join(d, "score.musicxml"), result.notes, result.tempo)
-        payload = result.to_dict()
-        write_json(os.path.join(d, "project.json"), payload)
-        job.result = payload
+        # Exports (MIDI/CSV/MusicXML/JSON) are generated lazily on first download
+        # (see job_export) instead of up front, so the job finishes as soon as the
+        # analysis does rather than waiting on every format nobody may request.
+        job.result = result.to_dict()
         job.status = "done"
         job.progress = 1.0
         job.message = "Complete"
@@ -147,12 +144,7 @@ def analyze_demo(preset: str = Form("maximum")):
                 job.message = ev.get("message", job.message)
             job.video_path = video
             result = analyze(video, Options.for_preset(job.preset), progress, truth=truth)
-            write_midi(os.path.join(d, "reconstruction.mid"), result.notes, result.tempo)
-            write_csv(os.path.join(d, "notes.csv"), result.notes)
-            write_musicxml(os.path.join(d, "score.musicxml"), result.notes, result.tempo)
-            payload = result.to_dict()
-            write_json(os.path.join(d, "project.json"), payload)
-            job.result = payload
+            job.result = result.to_dict()   # exports generated lazily on download
             job.status = "done"; job.progress = 1.0; job.message = "Complete"
         except Exception as e:
             job.status = "error"; job.error = str(e); traceback.print_exc()
@@ -189,10 +181,57 @@ def job_video(job_id: str):
 _MSCORE = shutil.which("mscore") or shutil.which("musescore") or shutil.which("MuseScore")
 
 
-def _render_pdf(d: str) -> str:
+_EXPORT_FILES = {"midi": "reconstruction.mid", "csv": "notes.csv",
+                 "musicxml": "score.musicxml", "json": "project.json"}
+
+
+def _notes_tempo_from_result(result: dict):
+    """Rebuild NoteEvent list + TempoAnalysis from a stored result payload."""
+    from synthesia.model import NoteEvent
+    from synthesia.tempo import TempoAnalysis
+    notes = [NoteEvent.from_dict(n) for n in result.get("notes", [])]
+    notes.sort(key=lambda n: (n.start, n.midi))
+    for i, n in enumerate(notes):
+        n.id = i + 1
+    t = result.get("tempo", {}) or {}
+    tempo = TempoAnalysis(
+        bpm=float(t.get("bpm", 120.0)),
+        beat_period=float(t.get("beat_period", 0.5)),
+        beat_phase=float(t.get("beat_phase", 0.0)),
+        time_signature=tuple(t.get("time_signature", [4, 4])),
+        segments=[], confidence=float(t.get("confidence", 0.5)),
+    )
+    return notes, tempo
+
+
+def _ensure_export(job: "Job", d: str, fmt: str) -> str:
+    """Generate the requested export file on demand from the job's result and
+    cache it on disk, so formats are produced only when actually downloaded."""
+    fname = _EXPORT_FILES.get(fmt)
+    if not fname:
+        raise HTTPException(404, "unknown export format")
+    path = os.path.join(d, fname)
+    if os.path.exists(path):
+        return path
+    if job.result is None:
+        raise HTTPException(404, "result not ready")
+    if fmt == "json":
+        write_json(path, job.result)
+        return path
+    notes, tempo = _notes_tempo_from_result(job.result)
+    if fmt == "midi":
+        write_midi(path, notes, tempo)
+    elif fmt == "csv":
+        write_csv(path, notes)
+    elif fmt == "musicxml":
+        write_musicxml(path, notes, tempo)
+    return path
+
+
+def _render_pdf(d: str, job: "Job") -> str:
     """Engrave score.musicxml to a sheet-music PDF via MuseScore. Rendered fresh
     so it reflects the latest (possibly UI-edited) score."""
-    src = os.path.join(d, "score.musicxml")
+    src = _ensure_export(job, d, "musicxml")
     if not os.path.exists(src):
         raise HTTPException(404, "score not available")
     if not _MSCORE:
@@ -215,14 +254,12 @@ def job_export(job_id: str, fmt: str):
         raise HTTPException(404, "job not found")
     d = _job_dir(job_id)
     if fmt == "pdf":
-        return FileResponse(_render_pdf(d), filename="sheet-music.pdf",
+        return FileResponse(_render_pdf(d, job), filename="sheet-music.pdf",
                             media_type="application/pdf")
-    files = {"midi": "reconstruction.mid", "csv": "notes.csv",
-             "musicxml": "score.musicxml", "json": "project.json"}
-    fname = files.get(fmt)
-    if not fname or not os.path.exists(os.path.join(d, fname)):
-        raise HTTPException(404, "export not available")
-    return FileResponse(os.path.join(d, fname), filename=fname)
+    if fmt not in _EXPORT_FILES:
+        raise HTTPException(404, "unknown export format")
+    path = _ensure_export(job, d, fmt)
+    return FileResponse(path, filename=_EXPORT_FILES[fmt])
 
 
 @app.post("/api/jobs/{job_id}/notes")
