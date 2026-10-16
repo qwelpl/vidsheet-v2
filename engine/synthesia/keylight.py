@@ -47,6 +47,16 @@ class KeyLightSampler:
         # Follow the theme's own detected saturation floor instead, clamped so a
         # near-grey keybed shadow still can't masquerade as a lit note.
         self.sat_min = int(np.clip(self.theme.sat_min, 35, self.sat_min))
+        # Tripwire band in the roll, just above the strike line. Each falling bar
+        # crosses it as a pulse, so repeated notes - which keep a key continuously
+        # lit (glow bridges the gap) and so never dip in the key illumination -
+        # still read as separate bar arrivals here, giving the re-strike timing the
+        # lit-key envelope cannot (§12). The key body stays the detector of record
+        # for which notes exist and their hand; this only subdivides repeats.
+        strike = int(round(self.geom.strike_y))
+        self.trip_y1 = max(1, strike - 8)
+        self.trip_y0 = max(0, self.trip_y1 - max(16, int(round(0.045 * strike))))
+        self._chrom_hues = [c.hue for c in self.theme.clusters if not c.achromatic]
 
     def _region(self, lane) -> tuple[int, int, int, int]:
         """(y0, y1, x0, x1) of the key body to sample, avoiding the top glow
@@ -63,14 +73,16 @@ class KeyLightSampler:
         x1 = min(self.geom.width, int(round(lane.center + xw)) + 1)
         return y0, y1, x0, x1
 
-    def sample_raw(self, bgr: np.ndarray) -> dict[int, tuple[int, float]]:
+    def sample_raw(self, bgr: np.ndarray = None, hsv: np.ndarray = None
+                   ) -> dict[int, tuple[int, float]]:
         """Return {midi: (best_cluster, fill_fraction)} for EVERY key, including
         sub-threshold coverage. Keeping the raw fraction (share of the key body
         matching the note colour) - not just a lit/unlit flag - is what lets us
         (a) separate a fast repeat that only *dims* between hits without clearing
         ``fill_thr`` (§12), and (b) place the attack sub-frame by interpolating
         where coverage crosses the lit threshold as the key lights up (§10, §18)."""
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        if hsv is None:
+            hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         out: dict[int, tuple[int, float]] = {}
         for midi, lane in self.geom.lanes.items():
             y0, y1, x0, x1 = self._region(lane)
@@ -118,6 +130,31 @@ class KeyLightSampler:
         return {m: (c, f) for m, (c, f) in self.sample_raw(bgr).items()
                 if f >= self.fill_thr}
 
+    def sample_tripwire(self, hsv: np.ndarray) -> dict[int, float]:
+        """Per-lane note-colour coverage in the roll tripwire band just above the
+        strike line. Hand is irrelevant here (any note colour counts); this only
+        reports whether a bar is crossing, so repeats can be split."""
+        out: dict[int, float] = {}
+        if not self._chrom_hues or self.trip_y1 <= self.trip_y0:
+            return out
+        band = hsv[self.trip_y0:self.trip_y1, :, :]
+        h = band[..., 0].astype(np.float32)
+        s = band[..., 1].astype(np.float32)
+        v = band[..., 2].astype(np.float32)
+        lit = np.zeros(h.shape, dtype=bool)
+        for hue in self._chrom_hues:
+            dh = np.minimum(np.abs(h - hue), 180 - np.abs(h - hue))
+            lit |= (dh <= 18) & (s >= self.sat_min) & (v >= self.val_min)
+        for midi, lane in self.geom.lanes.items():
+            xw = lane.half_width * 0.55
+            x0 = max(0, int(round(lane.center - xw)))
+            x1 = min(self.geom.width, int(round(lane.center + xw)) + 1)
+            if x1 <= x0:
+                out[midi] = 0.0
+            else:
+                out[midi] = float(lit[:, x0:x1].mean())
+        return out
+
 
 def applicable(geom: KeyboardGeometry, theme: ThemeModel,
                sample_frames: list[np.ndarray], min_hit_frac: float = 0.25) -> bool:
@@ -135,6 +172,7 @@ class _LaneLight:
     times: list[float] = field(default_factory=list)
     lit: list[int] = field(default_factory=list)     # cluster index, -1 = off
     fill: list[float] = field(default_factory=list)   # colour coverage 0..1
+    trip: list[float] = field(default_factory=list)   # roll tripwire coverage 0..1
 
 
 class KeyLightCollector:
@@ -144,13 +182,16 @@ class KeyLightCollector:
         self.hist: dict[int, _LaneLight] = {m: _LaneLight() for m in geom.lanes}
 
     def add(self, time: float, bgr: np.ndarray) -> None:
-        raw = self.sampler.sample_raw(bgr)
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        raw = self.sampler.sample_raw(hsv=hsv)
+        trip = self.sampler.sample_tripwire(hsv)
         thr = self.sampler.fill_thr
         for m, lane in self.hist.items():
             lane.times.append(time)
             c, f = raw.get(m, (-1, 0.0))
             lane.lit.append(c if f >= thr else -1)
             lane.fill.append(f)
+            lane.trip.append(trip.get(m, 0.0))
 
 
 def extract_notes(hist: dict[int, _LaneLight], geom: KeyboardGeometry, fps: float,
@@ -256,6 +297,20 @@ def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames,
             # phantom repeats - the dominant error on busy notes-over-video. The
             # envelope trough is the only evidence specific to this key.
             splits = _restrike_times(fill, times, i, last_lit, frame_dt, min_frames)
+            # Repeats that keep the key continuously lit (glow bridges the gap)
+            # leave no trough in the key illumination, so the envelope split above
+            # misses them. The falling bars still separate in the roll: add a split
+            # at each bar that crosses the tripwire band during this lit run (§12).
+            if lane.trip:
+                tw = _tripwire_restrikes(lane.trip, times, i, last_lit, fill_thr)
+                # A real re-attack makes a sound, so keep a tripwire split only
+                # when an audio attack lands near it. This rejects tripwire pulses
+                # driven by moving footage behind the roll (embers, light streaks)
+                # that have no corresponding note, without needing the illumination
+                # to dip - which is exactly what glow-bridged repeats never do.
+                if onsets is not None and len(onsets):
+                    tw = [t for t in tw if _near(onsets, t, 0.06)]
+                splits += tw
             splits = _dedupe(sorted(splits), frame_dt * max(min_frames, 2))
             bounds = [t_on] + splits + [t_off]
             for a, b in zip(bounds, bounds[1:]):
@@ -308,6 +363,32 @@ def _restrike_times(fill: list[float], times: list[float], i: int, last_lit: int
     return splits
 
 
+def _near(onsets: np.ndarray, t: float, tol: float) -> bool:
+    """Is there an audio attack within ``tol`` seconds of ``t``?"""
+    j = int(np.searchsorted(onsets, t))
+    return min((abs(onsets[k] - t) for k in (j - 1, j) if 0 <= k < len(onsets)),
+               default=1e9) <= tol
+
+
+def _tripwire_restrikes(trip: list[float], times: list[float], i: int,
+                        last_lit: int, thr: float) -> list[float]:
+    """Split points from the roll tripwire: a bar crossing it drives coverage up,
+    the gap before the next bar drops it back down. Each rising edge that follows a
+    genuine clearing of the band (coverage fell well below the lit threshold) is a
+    fresh bar arrival. Requiring the clear first rejects tripwire flicker and a
+    single bar's own ragged edge, so a sustained note is never split.
+
+    The very first rising edge is the note's own onset (already placed from the key
+    illumination) and is not returned - only re-strikes inside the run are."""
+    hi = min(last_lit, len(trip) - 1)
+    out: list[float] = []
+    for k in range(i + 1, hi + 1):
+        # a rising edge: the band was clear (gap between bars) and a new bar enters
+        if trip[k] >= thr and trip[k - 1] < thr:
+            out.append(times[k])
+    return out
+
+
 def _restruck(fill: list[float], times: list[float], t: float,
               dip_frac: float = 0.7) -> bool:
     """Is there a genuine re-strike trough in this key near time ``t``?
@@ -348,5 +429,7 @@ def _mk(midi, start, end, cluster, geom, run_len, was_split) -> NoteEvent:
     ne.duration_confidence = 0.8
     ne.velocity = 80
     if was_split:
-        ne.flag("repeat_split_by_audio")
+        # "restrike" is the flag cleanup_fragments / resolve_same_pitch_overlaps
+        # honour to keep a genuine re-attack from being fused back into one note.
+        ne.flag("restrike")
     return ne
