@@ -58,10 +58,18 @@ class HistoryCollector:
 def estimate_fall_speed(hist: dict[int, LaneHistory], geom: KeyboardGeometry) -> float:
     """Median leading-edge speed (px/s), fitted over each contiguous approach
     segment. Fitting over a long baseline avoids the bias that per-frame integer
-    pixel deltas introduce."""
+    pixel deltas introduce.
+
+    Each segment is kept with the y-range its leading edge swept. A genuine
+    falling bar descends most of the roll, so its segment spans a large y-range;
+    composited-background jitter only nudges the edge a few pixels and yields a
+    near-zero slope. On notes-over-video renders those tiny noise segments
+    outnumber the real bars, so a median over all of them collapses to a fraction
+    of the true speed (~10x too slow). Restrict the median to segments that swept
+    a real share of the roll, relaxing the floor only if too few bars qualify."""
     strike = float(geom.strike_y)
     band = max(6.0, strike * 0.02)
-    speeds = []
+    segs: list[tuple[float, float]] = []  # (slope px/s, y-span px)
     for h in hist.values():
         seg_t, seg_y = [], []
         prev = None
@@ -72,13 +80,19 @@ def estimate_fall_speed(hist: dict[int, LaneHistory], geom: KeyboardGeometry) ->
                 seg_t.append(h.times[k]); seg_y.append(yb)
             else:
                 if len(seg_t) >= 5:
-                    speeds.append(_slope(seg_t, seg_y))
+                    segs.append((_slope(seg_t, seg_y), seg_y[-1] - seg_y[0]))
                 seg_t, seg_y = ([h.times[k]], [yb]) if yb < strike - band else ([], [])
             prev = yb
         if len(seg_t) >= 5:
-            speeds.append(_slope(seg_t, seg_y))
-    speeds = [s for s in speeds if s > 1]
-    return float(np.median(speeds)) if speeds else strike * 0.5
+            segs.append((_slope(seg_t, seg_y), seg_y[-1] - seg_y[0]))
+    segs = [(s, span) for s, span in segs if s > 1]
+    if not segs:
+        return strike * 0.5
+    for frac in (0.3, 0.2, 0.1):
+        kept = [s for s, span in segs if span >= strike * frac]
+        if len(kept) >= 5:
+            return float(np.median(kept))
+    return float(np.median([s for s, _ in segs]))
 
 
 def _slope(ts, ys) -> float:
