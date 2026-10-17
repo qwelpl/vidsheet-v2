@@ -90,6 +90,10 @@ class NoteEvent:
     track_id: Optional[int] = None
     color_cluster: Optional[int] = None  # theme colour cluster (hand hint, §16)
     lane_x: Optional[float] = None  # sub-pixel horizontal centre in the roll
+    peak_fill: float = 1.0  # peak key-body coverage over the lit run (key-highlight
+    # detector only; 1.0 for bar tracking). A real press fills most of the key;
+    # glow bleeding onto an adjacent key only half-fills it, which the neighbour
+    # suppression below uses to drop bloom-induced phantoms.
     verification: VerificationStatus = VerificationStatus.UNVERIFIED
     manually_corrected: bool = False
     issues: list[str] = field(default_factory=list)

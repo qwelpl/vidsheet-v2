@@ -23,6 +23,13 @@ from .keyboard import KeyboardGeometry
 from .model import NoteEvent, Hand, is_black_key
 from .theme import ThemeModel
 
+# Shortest plausible same-key re-strike. A real repeated note tops out around a
+# dozen hits per second; anything faster is not a performance but glow flicker on
+# the key body (worst on black keys, which sit right under the top glow strip)
+# carving a spurious trough that reads as a re-attack. Repeats detected closer
+# than this - envelope troughs or tripwire pulses alike - are dropped (§12).
+MIN_RESTRIKE_SEC = 0.11
+
 
 @dataclass
 class KeyLightSampler:
@@ -203,10 +210,41 @@ def extract_notes(hist: dict[int, _LaneLight], geom: KeyboardGeometry, fps: floa
     for midi, lane in hist.items():
         notes.extend(_lane_notes(midi, lane, geom, frame_dt, onsets, min_frames,
                                  fill_thr))
+    notes = _drop_glow_bleed(notes)
     notes.sort(key=lambda n: (n.start, n.midi))
     for i, n in enumerate(notes):
         n.id = i + 1
     return notes
+
+
+# A real key press fills most of the key body; the bloom from a bright held key
+# only half-fills the key one or two semitones away. So a note whose peak
+# coverage is weak AND which overlaps a clearly brighter neighbour within a
+# couple of semitones is glow bleed, not a played note, and is dropped. A genuine
+# tone cluster survives because both keys light fully (neither is weak), and an
+# isolated faint note survives because it has no brighter neighbour to bleed from.
+_BLEED_FILL_MAX = 0.70     # peak coverage at/below which a note may be bleed
+_BLEED_BRIGHTER = 0.20     # neighbour must out-fill it by at least this much
+
+
+def _drop_glow_bleed(notes: list[NoteEvent]) -> list[NoteEvent]:
+    order = sorted(notes, key=lambda n: n.start)
+    kept: list[NoteEvent] = []
+    for n in order:
+        if n.peak_fill <= _BLEED_FILL_MAX:
+            bleed = False
+            for o in order:
+                if o is n or not (1 <= abs(o.midi - n.midi) <= 2):
+                    continue
+                overlap = min(n.end, o.end) - max(n.start, o.start)
+                if (overlap > 0.5 * n.duration
+                        and o.peak_fill >= n.peak_fill + _BLEED_BRIGHTER):
+                    bleed = True
+                    break
+            if bleed:
+                continue
+        kept.append(n)
+    return kept
 
 
 def _subframe_onset(fill, times, i, thr) -> float:
@@ -311,14 +349,36 @@ def _lane_notes(midi, lane: _LaneLight, geom, frame_dt, onsets, min_frames,
                 if onsets is not None and len(onsets):
                     tw = [t for t in tw if _near(onsets, t, 0.06)]
                 splits += tw
-            splits = _dedupe(sorted(splits), frame_dt * max(min_frames, 2))
+            splits = _dedupe(sorted(splits),
+                             max(frame_dt * max(min_frames, 2), MIN_RESTRIKE_SEC))
+            # Drop any split sitting within a re-strike interval of the run's own
+            # ends: a tripwire pulse or envelope dip that close to the onset/offset
+            # is not a second hit, just the attack or release of this one note, and
+            # keeping it would split off a sliver note (§12).
+            splits = [s for s in splits
+                      if s - t_on >= MIN_RESTRIKE_SEC and t_off - s >= MIN_RESTRIKE_SEC]
+            run_peak = max(fill[i:last_lit + 1], default=1.0)
             bounds = [t_on] + splits + [t_off]
             for a, b in zip(bounds, bounds[1:]):
                 if b - a < frame_dt * 0.5:
                     continue
-                out.append(_mk(midi, a, b, cluster, geom, run_len, len(splits) > 0))
+                out.append(_mk(midi, a, b, cluster, geom, run_len,
+                               len(splits) > 0, run_peak))
         i = last_lit + 1
-    return out
+    # Coalesce any two consecutive hits on this key whose onsets fall closer than
+    # a plausible re-strike. The split guards above cover dips inside one lit run;
+    # this also catches the other origin - glow flicker that drops the key fully
+    # dark for a frame or two, which the main loop reads as a release and a fresh
+    # attack. Either way a sub-re-strike gap is one note, not two (§12).
+    out.sort(key=lambda ne: ne.start)
+    merged: list[NoteEvent] = []
+    for ne in out:
+        if merged and ne.start - merged[-1].start < MIN_RESTRIKE_SEC:
+            prev = merged[-1]
+            prev.end = max(prev.end, ne.end)
+            continue
+        merged.append(ne)
+    return merged
 
 
 def _restrike_times(fill: list[float], times: list[float], i: int, last_lit: int,
@@ -336,14 +396,17 @@ def _restrike_times(fill: list[float], times: list[float], i: int, last_lit: int
     would fall short of it, so a continuously-lit repeat's dips were all missed."""
     dip_frac = 0.6      # trough must fall to <=60% of the local coverage
     rise_frac = 0.85    # ...and climb back to >=85% of the pre-dip level
-    min_sep = max(min_frames, 2)
+    min_sep = max(min_frames, 2, int(round(MIN_RESTRIKE_SEC / max(frame_dt, 1e-3))))
     win = max(3, min_sep + 1)
     seg = fill[i:last_lit + 1]
     m = len(seg)
     if m < 2 * min_sep:
         return []
     splits: list[float] = []
-    last_split_k = -min_sep
+    # Seed from the onset (k=0), not -min_sep, so the first trough must clear
+    # min_sep frames of the note's own attack. Otherwise a dip one or two frames
+    # in carves a sub-frame sliver off the front of the note (§12).
+    last_split_k = 0
     k = 1
     while k < m - 1:
         # a local minimum: not higher than the frame before, strictly below after
@@ -416,10 +479,11 @@ def _dedupe(ts: list[float], min_gap: float) -> list[float]:
     return out
 
 
-def _mk(midi, start, end, cluster, geom, run_len, was_split) -> NoteEvent:
+def _mk(midi, start, end, cluster, geom, run_len, was_split, peak_fill=1.0) -> NoteEvent:
     ne = NoteEvent(id=0, midi=midi, start=float(start), end=float(max(end, start + 1e-3)),
                    lane_x=geom.lanes[midi].center if midi in geom.lanes else None)
     ne.color_cluster = cluster
+    ne.peak_fill = float(peak_fill)
     ne.detection_confidence = float(np.clip(run_len / 4.0, 0.5, 1.0))
     ne.pitch_confidence = geom.confidence
     ne.timing_confidence = 0.7
