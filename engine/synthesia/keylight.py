@@ -63,6 +63,12 @@ class KeyLightSampler:
         strike = int(round(self.geom.strike_y))
         self.trip_y1 = max(1, strike - 8)
         self.trip_y0 = max(0, self.trip_y1 - max(16, int(round(0.045 * strike))))
+        # A band well ABOVE the strike line, clear of the key-glow halo that
+        # spreads a few pixels up from a lit key. Only a genuine falling bar
+        # reaches here; a key lit purely by a neighbour's bloom has no bar, so this
+        # band's coverage confirms a note is real and not adjacent-key bleed.
+        self.roll_y1 = max(1, strike - int(round(0.14 * strike)))
+        self.roll_y0 = max(0, strike - int(round(0.26 * strike)))
         self._chrom_hues = [c.hue for c in self.theme.clusters if not c.achromatic]
 
     def _region(self, lane) -> tuple[int, int, int, int]:
@@ -162,6 +168,28 @@ class KeyLightSampler:
                 out[midi] = float(lit[:, x0:x1].mean())
         return out
 
+    def sample_roll(self, hsv: np.ndarray) -> dict[int, float]:
+        """Per-lane note-colour coverage in the roll band well above the strike
+        line, where only a falling bar reaches (not key-glow bloom). Confirms a lit
+        key is backed by an actual note rather than a neighbour's bleed."""
+        out: dict[int, float] = {}
+        if not self._chrom_hues or self.roll_y1 <= self.roll_y0:
+            return out
+        band = hsv[self.roll_y0:self.roll_y1, :, :]
+        h = band[..., 0].astype(np.float32)
+        s = band[..., 1].astype(np.float32)
+        v = band[..., 2].astype(np.float32)
+        lit = np.zeros(h.shape, dtype=bool)
+        for hue in self._chrom_hues:
+            dh = np.minimum(np.abs(h - hue), 180 - np.abs(h - hue))
+            lit |= (dh <= 18) & (s >= self.sat_min) & (v >= self.val_min)
+        for midi, lane in self.geom.lanes.items():
+            xw = lane.half_width * 0.55
+            x0 = max(0, int(round(lane.center - xw)))
+            x1 = min(self.geom.width, int(round(lane.center + xw)) + 1)
+            out[midi] = 0.0 if x1 <= x0 else float(lit[:, x0:x1].mean())
+        return out
+
 
 def applicable(geom: KeyboardGeometry, theme: ThemeModel,
                sample_frames: list[np.ndarray], min_hit_frac: float = 0.25) -> bool:
@@ -180,6 +208,7 @@ class _LaneLight:
     lit: list[int] = field(default_factory=list)     # cluster index, -1 = off
     fill: list[float] = field(default_factory=list)   # colour coverage 0..1
     trip: list[float] = field(default_factory=list)   # roll tripwire coverage 0..1
+    roll: list[float] = field(default_factory=list)   # falling-bar coverage 0..1
 
 
 class KeyLightCollector:
@@ -192,6 +221,7 @@ class KeyLightCollector:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         raw = self.sampler.sample_raw(hsv=hsv)
         trip = self.sampler.sample_tripwire(hsv)
+        roll = self.sampler.sample_roll(hsv)
         thr = self.sampler.fill_thr
         for m, lane in self.hist.items():
             lane.times.append(time)
@@ -199,6 +229,7 @@ class KeyLightCollector:
             lane.lit.append(c if f >= thr else -1)
             lane.fill.append(f)
             lane.trip.append(trip.get(m, 0.0))
+            lane.roll.append(roll.get(m, 0.0))
 
 
 def extract_notes(hist: dict[int, _LaneLight], geom: KeyboardGeometry, fps: float,
@@ -211,10 +242,68 @@ def extract_notes(hist: dict[int, _LaneLight], geom: KeyboardGeometry, fps: floa
         notes.extend(_lane_notes(midi, lane, geom, frame_dt, onsets, min_frames,
                                  fill_thr))
     notes = _drop_glow_bleed(notes)
+    notes = _drop_bloom_adjacent(notes, hist, geom)
     notes.sort(key=lambda n: (n.start, n.midi))
     for i, n in enumerate(notes):
         n.id = i + 1
     return notes
+
+
+# Strong bloom can light a key one or two semitones from a struck key to full
+# brightness, so its coverage is indistinguishable from a real press (the fill
+# test above only catches dim bleed). But bloom is a KEY-glow effect: the phantom
+# key has no falling bar. A real note's bar sweeps the roll band well above the
+# strike line in the ~second before it sounds; a bloom phantom's lane stays empty
+# there. So drop a note that has a brighter same-time neighbour within two
+# semitones AND no bar support of its own, while the neighbour has one - a genuine
+# tone cluster keeps both (both bars present) and an isolated note keeps itself
+# (no neighbour to bleed from). §7/§16.
+_ROLL_SUPPORT = 0.30       # bar coverage that confirms a real falling bar
+_ROLL_STRONG = 0.85        # a neighbour this well-barred is unambiguously real
+_ROLL_REL = 0.80           # a minor-2nd note under this fraction of it is bloom
+_ROLL_LEAD_LO = 0.05       # seconds before onset: window where the bar is aloft
+_ROLL_LEAD_HI = 1.00
+
+
+def _roll_support(lane: "_LaneLight", t: float) -> float:
+    """Peak falling-bar coverage in this lane over [t-HI, t-LO] before onset t."""
+    if not lane.roll:
+        return 0.0
+    ts = lane.times
+    lo = t - _ROLL_LEAD_HI
+    hi = t - _ROLL_LEAD_LO
+    best = 0.0
+    for k in range(len(ts)):
+        if lo <= ts[k] <= hi and lane.roll[k] > best:
+            best = lane.roll[k]
+    return best
+
+
+def _drop_bloom_adjacent(notes: list[NoteEvent], hist: dict[int, "_LaneLight"],
+                         geom: KeyboardGeometry) -> list[NoteEvent]:
+    order = sorted(notes, key=lambda n: n.start)
+    support = {id(n): _roll_support(hist[n.midi], n.start)
+               if n.midi in hist else 1.0 for n in order}
+    drop: set[int] = set()
+    for n in order:
+        sn = support[id(n)]
+        for o in order:
+            dm = abs(o.midi - n.midi)
+            if o is n or not (1 <= dm <= 2):
+                continue
+            overlap = min(n.end, o.end) - max(n.start, o.start)
+            if overlap <= 0.5 * n.duration:
+                continue
+            so = support[id(o)]
+            # (a) n has no bar at all while the neighbour clearly does: pure bloom.
+            # (b) a minor-second filler inside a chord: the neighbour sits on a
+            # solid bar and n's bar support is markedly weaker - a real cluster
+            # would back both keys about equally, so only the bloom key is dropped.
+            if (sn < _ROLL_SUPPORT and so >= _ROLL_SUPPORT) or (
+                    dm <= 2 and so >= _ROLL_STRONG and sn < _ROLL_REL * so):
+                drop.add(id(n))
+                break
+    return [n for n in order if id(n) not in drop]
 
 
 # A real key press fills most of the key body; the bloom from a bright held key
