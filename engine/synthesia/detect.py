@@ -19,6 +19,13 @@ import numpy as np
 from .keyboard import KeyboardGeometry
 from .theme import ThemeModel
 
+# A dark note tier keeps its colour fully saturated even as its brightness drops;
+# glow desaturates as it fades. These admit an on-hue pixel below the theme's
+# val_min only when it is strongly saturated, recovering dim-but-solid bars
+# (olive/maroon over black) without letting translucent glow register (§34).
+_DARK_CORE_SAT = 230
+_DARK_CORE_VAL = 55
+
 
 @dataclass
 class LaneRun:
@@ -141,6 +148,13 @@ class LaneSampler:
                 continue
             dh = np.minimum(np.abs(hue - c.hue), 180 - np.abs(hue - c.hue))
             m |= (dh <= 20) & (sat >= t.sat_min) & (val >= t.val_min)
+            # Dark-but-vivid cores. A dim note colour (olive/maroon over black)
+            # drops a bar's core well under val_min while it stays FULLY saturated;
+            # translucent glow, by contrast, desaturates as it fades. So admit a
+            # pixel below val_min only when it is strongly saturated and on-hue -
+            # this recovers the dark tier's missed notes without letting glow in,
+            # and the spatial gates in observe() still reject sparse noise (§34).
+            m |= (dh <= 20) & (sat >= _DARK_CORE_SAT) & (val >= _DARK_CORE_VAL)
         return m
 
     def _runs_from_mask(self, mask, hue, sat, val, mask2d, rh) -> list[LaneRun]:
