@@ -341,8 +341,12 @@ def build_geometry(
         kb_top, kb_bottom = detect_keyboard_band(gray)
 
     band_h = kb_bottom - kb_top
-    # lower ~30% of the band is below the black keys -> only white separators
-    lower = gray[kb_bottom - max(3, band_h // 3): kb_bottom, :]
+    # A band below the black keys, where only the white separators show. Skip the
+    # very bottom of the keys too: some renders print a note-name letter or
+    # fingering number along the lower edge of each white key, and those dark
+    # glyphs read as extra separators that halve the apparent key count and break
+    # the octave mapping. Sampling above that label strip keeps the comb clean.
+    lower = gray[kb_bottom - max(3, band_h // 3): kb_bottom - max(2, band_h // 6), :]
     upper = gray[kb_top: kb_top + max(3, band_h // 2), :]
 
     boundaries = _find_white_boundaries(lower)
