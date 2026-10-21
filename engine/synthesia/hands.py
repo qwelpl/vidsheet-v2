@@ -62,6 +62,49 @@ _REACH = 14
 _CHORD_WINDOW = 0.03
 
 
+def _reachable(pm: list[int]) -> bool:
+    """True when the sorted pitch list can be split into a lower and upper group
+    each within one hand's reach."""
+    for k in range(len(pm) + 1):
+        L, R = pm[:k], pm[k:]
+        if (not L or L[-1] - L[0] <= _REACH) and (not R or R[-1] - R[0] <= _REACH):
+            return True
+    return False
+
+
+def _worst_hand_span(pm: list[int]) -> int:
+    """Smallest achievable 'wider hand' span over all two-hand splits of ``pm``."""
+    return min(max((pm[:k][-1] - pm[:k][0]) if pm[:k] else 0,
+                   (pm[k:][-1] - pm[k:][0]) if pm[k:] else 0)
+               for k in range(len(pm) + 1))
+
+
+def _drop_octave_dupes(cluster: list[int], notes: list[NoteEvent]) -> list[int]:
+    """A simultaneous group too wide for two hands is made playable by dropping
+    octave doublings: a note whose pitch class already sounds elsewhere in the
+    group is redundant. Remove such duplicates - the one whose removal best
+    restores a reachable two-hand split (which may be an inner note wedged between
+    the two hands' ranges, not just an outer one) - until the group fits two hands
+    or no doubled note is left. ``cluster`` is sorted-by-pitch note indices;
+    returns the indices removed."""
+    removed: list[int] = []
+    while len(cluster) > 2 and not _reachable([notes[i].midi for i in cluster]):
+        cur = [notes[i].midi for i in cluster]
+        classes = [m % 12 for m in cur]
+        cands = [pos for pos in range(len(cluster))
+                 if classes.count(cur[pos] % 12) > 1]
+        if not cands:
+            break
+        # prefer the removal that makes the rest reachable, then the one that most
+        # narrows the wider hand
+        def _score(pos):
+            rest = cur[:pos] + cur[pos + 1:]
+            return (not _reachable(rest), _worst_hand_span(rest))
+        pos = min(cands, key=_score)
+        removed.append(cluster.pop(pos))
+    return removed
+
+
 def _assign_by_context(notes: list[NoteEvent]) -> None:
     """Colour gives no hand info: track two hands as moving pitch centres and,
     at each instant the keys go down together, split the simultaneous notes into a
@@ -82,6 +125,7 @@ def _assign_by_context(notes: list[NoteEvent]) -> None:
         lx, rx = min(allm), max(allm)
 
     N = len(order)
+    dropped: set[int] = set()
     i = 0
     while i < N:
         t0 = notes[order[i]].start
@@ -90,6 +134,10 @@ def _assign_by_context(notes: list[NoteEvent]) -> None:
             j += 1
         cluster = sorted((order[k] for k in range(i, j)),
                          key=lambda idx: notes[idx].midi)
+        # A group too wide for two hands is usually an octave-doubled stab; drop
+        # the redundant doublings so the remaining notes are reachable.
+        for idx in _drop_octave_dupes(cluster, notes):
+            dropped.add(idx)
         pm = [notes[idx].midi for idx in cluster]
         m = len(cluster)
 
@@ -131,3 +179,9 @@ def _assign_by_context(notes: list[NoteEvent]) -> None:
         if R:
             rx = 0.6 * rx + 0.4 * float(np.mean([notes[idx].midi for idx in R]))
         i = j
+
+    if dropped:
+        kept = [n for k, n in enumerate(notes) if k not in dropped]
+        notes[:] = kept
+        for new_id, n in enumerate(notes, 1):
+            n.id = new_id
