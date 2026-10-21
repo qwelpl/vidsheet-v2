@@ -22,6 +22,24 @@ class TempoAnalysis:
     time_signature: tuple[int, int]
     segments: list[TempoSegment]
     confidence: float
+    # Drift-tracking beat grid (§19, §20). A live performance speeds up and slows
+    # down; a single global bpm+phase then slides a fraction of a beat across the
+    # piece and scatters onsets onto off-grid (32nd/dotted) positions - the "timing
+    # is off" look. These sampled arrays describe a monotone time -> sixteenth-count
+    # map that bends with the local tempo, so ``beat_at`` places every note on the
+    # beat grid it was actually played against. ``None`` falls back to the linear
+    # global grid (too few notes to track).
+    grid_ts: object = None       # np.ndarray of sample times (s)
+    grid_phi: object = None      # np.ndarray of cumulative sixteenth count at ts
+    grid_delta: float = 0.0      # sub-sixteenth phase so onsets land on integers
+    grid_shift: int = 0          # downbeat offset in sixteenths (0..3)
+
+    def beat_at(self, t: float) -> float:
+        """Fractional beat (quarter) index of time ``t`` on the tracked grid."""
+        if self.grid_ts is None:
+            return (t - self.beat_phase) / self.beat_period
+        phi = float(np.interp(t, self.grid_ts, self.grid_phi))
+        return (phi - self.grid_delta - self.grid_shift) / 4.0
 
     def to_dict(self) -> dict:
         return {
@@ -80,9 +98,97 @@ def estimate_tempo(notes: list[NoteEvent], fps: float) -> TempoAnalysis:
 
     beats = list(np.arange(phase, onsets[-1] + best_period, best_period))
     seg = TempoSegment(start=float(onsets[0]), bpm=float(bpm), beats=[float(b) for b in beats])
-    return TempoAnalysis(bpm=float(bpm), beat_period=float(best_period),
-                         beat_phase=float(phase), time_signature=(4, 4),
-                         segments=[seg], confidence=conf)
+    ta = TempoAnalysis(bpm=float(bpm), beat_period=float(best_period),
+                       beat_phase=float(phase), time_signature=(4, 4),
+                       segments=[seg], confidence=conf)
+
+    # Track the local tempo so a drifting/rubato performance still notates cleanly.
+    grid = _build_beat_map(onsets, best_period)
+    if grid is not None:
+        ta.grid_ts, ta.grid_phi, ta.grid_delta, ta.grid_shift = grid
+    return ta
+
+
+def _local_period(seg: np.ndarray, p0: float, span: float = 0.12) -> float:
+    """Best beat period for a short window of onsets, searched within ``span`` of
+    the global period ``p0`` so a window can track the local tempo but never jump
+    to a half/double-tempo lattice."""
+    bpm0 = 60.0 / p0
+    best_c, best_p = -1.0, p0
+    for b in np.arange(bpm0 * (1 - span), bpm0 * (1 + span) + 1e-9, 0.1):
+        c, _ = _grid_conc(seg, 60.0 / b)
+        if c > best_c:
+            best_c, best_p = c, 60.0 / b
+    return best_p
+
+
+def _build_beat_map(onsets: np.ndarray, p0: float,
+                    win: float = 6.0, hop: float = 1.5, dt: float = 0.01):
+    """Build a monotone time -> sixteenth-count map that follows the local tempo.
+
+    Local beat period is estimated in overlapping windows, interpolated between
+    window centres, and integrated (sixteenths/second) into a cumulative count
+    ``phi(t)``. A single sub-sixteenth phase ``delta`` then slides the whole grid
+    so the onsets land on integer sixteenths, and ``shift`` picks the downbeat.
+    Returns ``(ts, phi, delta, shift)`` or ``None`` when too few windows qualify.
+    """
+    t0, t1 = float(onsets[0]), float(onsets[-1])
+    if t1 - t0 < win or len(onsets) < 12:
+        return None
+    cs, ps = [], []
+    c = t0
+    while c <= t1 + 1e-9:
+        seg = onsets[(onsets >= c - win / 2) & (onsets <= c + win / 2)]
+        if len(seg) >= 6:
+            cs.append(c)
+            ps.append(_local_period(seg, p0))
+        c += hop
+    if len(cs) < 2:
+        return None
+    cs = np.asarray(cs, float)
+    ps = np.asarray(ps, float)
+
+    # Fine time axis padded past both ends (note releases can run past the last
+    # onset); sixteenth rate = 4 / local beat period, held flat beyond the windows.
+    ts = np.arange(t0 - 2.0, t1 + 10.0, dt)
+    step16 = np.interp(ts, cs, ps, left=ps[0], right=ps[-1]) / 4.0
+    rate = 1.0 / step16
+    phi = np.concatenate([[0.0], np.cumsum(0.5 * (rate[1:] + rate[:-1]) * dt)])
+
+    # Integration pins the local TEMPO but its phase drifts: a sub-percent bias in
+    # the per-window period accumulates over minutes into a whole-sixteenth slip,
+    # so a single global offset cannot line the grid up (the fractional parts come
+    # out uniform). Re-lock the phase locally instead: measure the residual
+    # sixteenth offset in each window (circular mean), unwrap it so it tracks the
+    # slip continuously, and subtract that slowly-varying correction from phi. This
+    # is the per-window phase fit, made into one monotone grid.
+    po = np.interp(onsets, ts, phi)
+    cw, phasors = [], []
+    c = t0
+    while c <= t1 + 1e-9:
+        m = (onsets >= c - win / 2) & (onsets <= c + win / 2)
+        if int(m.sum()) >= 6:
+            ang = 2 * np.pi * (po[m] - np.floor(po[m]))
+            cw.append(c)
+            phasors.append(np.mean(np.exp(1j * ang)))
+        c += hop
+    if len(cw) < 2:
+        return None
+    delta_w = np.unwrap(np.angle(np.asarray(phasors))) / (2 * np.pi)
+    delta_t = np.interp(ts, np.asarray(cw), delta_w,
+                        left=delta_w[0], right=delta_w[-1])
+    phi = phi - delta_t
+
+    # Pick the downbeat phase (which sixteenth is beat 0) by the shift that puts
+    # the most onsets on a beat line; ties keep 0.
+    po = np.interp(onsets, ts, phi)
+    idx = np.round(po).astype(int)
+    shift, best = 0, -1
+    for q in range(4):
+        hit = int(np.sum((idx - q) % 4 == 0))
+        if hit > best:
+            best, shift = hit, q
+    return ts, phi, 0.0, int(shift)
 
 
 def _odd_line_frac(onsets: np.ndarray, period: float, phase: float,
@@ -142,13 +248,15 @@ def quantize(notes: list[NoteEvent], tempo: TempoAnalysis,
     phase = tempo.beat_phase
     out = []
     for n in notes:
-        beat = (n.start - phase) / period
-        end_beat = (n.end - phase) / period
+        beat = tempo.beat_at(n.start)
+        end_beat = tempo.beat_at(n.end)
         qbeat, sdur = _snap(beat)
         qend, _ = _snap(end_beat)
         if qend <= qbeat:
             qend = qbeat + min(_DIVISIONS, key=lambda d: abs(d))
-        q_start_time = phase + qbeat * period
+        # map the snapped beat back to a time through the grid (near-identity for
+        # the linear fallback; drift-aware on the tracked grid)
+        q_start_time = _beat_to_time(tempo, qbeat)
         err_ms = (q_start_time - n.start) * 1000.0
         out.append({
             "id": n.id, "midi": n.midi,
@@ -158,6 +266,14 @@ def quantize(notes: list[NoteEvent], tempo: TempoAnalysis,
             "ambiguous": abs(err_ms) > (period * 1000 * 0.12),
         })
     return out
+
+
+def _beat_to_time(tempo: TempoAnalysis, beat: float) -> float:
+    """Inverse of ``beat_at``: time at a given fractional beat index."""
+    if tempo.grid_ts is None:
+        return tempo.beat_phase + beat * tempo.beat_period
+    phi = beat * 4.0 + tempo.grid_delta + tempo.grid_shift
+    return float(np.interp(phi, tempo.grid_phi, tempo.grid_ts))
 
 
 def _snap(beat: float) -> tuple[float, float]:

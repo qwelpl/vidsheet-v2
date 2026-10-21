@@ -109,6 +109,7 @@ def write_musicxml(path: str, notes: list[NoteEvent], tempo: TempoAnalysis) -> N
 def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
     period = tempo.beat_period
     phase = tempo.beat_phase
+    beat_at = tempo.beat_at          # drift-tracking time -> fractional beat
     beats_per_measure, beat_type = tempo.time_signature
 
     # Choose the notation resolution from the data instead of assuming sixteenths.
@@ -122,16 +123,17 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
     if len(notes) >= 16:
         starts = [n.start for n in notes]
 
+        # Concentration is measured in BEAT space on the tracked grid, so a note's
+        # fit is judged against the tempo it was played at, not a drifting global
+        # one (tol = 0.02 s expressed in beats).
+        bpos = [beat_at(s) for s in starts]
+        tol_beat = 0.02 / period
+
         def _conc(sub: int) -> float:
-            step = period / sub
-            best = 0.0
-            ph = 0.0
-            while ph < step:
-                hits = sum(1 for s in starts
-                           if abs((s - phase - ph) / step - round((s - phase - ph) / step)) * step <= 0.02)
-                best = max(best, hits / len(starts))
-                ph += step / 24
-            return best
+            step = 1.0 / sub
+            hits = sum(1 for b in bpos
+                       if abs(b - round(b / step) * step) <= tol_beat)
+            return hits / len(bpos)
 
         if period / 8 >= 0.028 and _conc(8) >= _conc(4) + 0.08:
             fine_sub, divisions = 8, 24   # 32nd=3, 16th=6, eighth=12, quarter=24
@@ -146,13 +148,13 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
     # dotted-sixteenth+thirty-second scraps because one note got yanked to a
     # triplet position while its neighbours stayed straight (the "timing is off"
     # look on triplet-heavy pieces). Triplets print as real tuplets below.
-    triplet_beats = _detect_triplet_beats(notes, period, phase, fine_sub)
+    triplet_beats = _detect_triplet_beats(notes, beat_at, fine_sub)
 
     def _beat_is_triplet(beat_i: int) -> bool:
         return beat_i in triplet_beats
 
     def _raw_div(t: float) -> int:
-        beat = (t - phase) / period
+        beat = beat_at(t)
         bi = int(np.floor(beat)) if _HAS_NP else int(beat // 1)
         if bi in triplet_beats:                     # snap to the eighth-triplet grid
             frac = round((beat - bi) * 3) / 3
@@ -201,7 +203,7 @@ def _build_musicxml(notes: list[NoteEvent], tempo: TempoAnalysis) -> str:
     return out.getvalue()
 
 
-def _detect_triplet_beats(notes, period, phase, fine_sub) -> set:
+def _detect_triplet_beats(notes, beat_at, fine_sub) -> set:
     """Return the set of quarter-beat indices whose onsets read as an eighth-note
     triplet. A beat qualifies when it carries at least two onsets that lie on the
     three-per-beat grid distinctly better than on the straight grid; everything
@@ -210,7 +212,7 @@ def _detect_triplet_beats(notes, period, phase, fine_sub) -> set:
         return set()
     by_beat: dict[int, list[float]] = {}
     for n in notes:
-        beat = (n.start - phase) / period
+        beat = beat_at(n.start)
         bi = int(np.floor(beat))
         by_beat.setdefault(bi, []).append(beat - bi)
 
