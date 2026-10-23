@@ -60,7 +60,10 @@ few hundred MB.
 
 From a clone instead? `git clone`, then run `./vidsheet` (macOS/Linux) or
 `.\vidsheet.ps1` (Windows) from the repo. Needs `ffmpeg`, `ffprobe`, `yt-dlp`,
-Python 3.12+, Node 20+.
+Python 3.12+, Node 20+. On macOS `./vidsheet` auto-installs any missing ones
+with Homebrew (installing Homebrew itself first if needed); set
+`VIDSHEET_NO_AUTOINSTALL=1` to opt out, or `brew install python@3.12 node
+ffmpeg yt-dlp` by hand.
 
 ## Running
 
