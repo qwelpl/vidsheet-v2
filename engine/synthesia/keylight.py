@@ -54,6 +54,16 @@ class KeyLightSampler:
         # Follow the theme's own detected saturation floor instead, clamped so a
         # near-grey keybed shadow still can't masquerade as a lit note.
         self.sat_min = int(np.clip(self.theme.sat_min, 35, self.sat_min))
+        # A lit key is usually a translucent colour WASH over the key, far less
+        # saturated than the solid falling bars the theme's saturation floor was
+        # measured from: a pastel hand can light its keys near saturation 45 while
+        # the other hand's keys sit at 160. Reading the key body at the roll's sat
+        # floor then drops the pale hand's keys entirely (one whole hand goes
+        # missing). Use a lower floor for the key body, while the roll/tripwire
+        # bands below keep the stricter ``sat_min`` (their bars really are solid).
+        # The hue gate and the brightness floor still reject the unlit keybed,
+        # whose saturation sits down around 5-10.
+        self.key_sat_min = int(np.clip(self.theme.sat_min * 0.5, 22, self.sat_min))
         # Tripwire band in the roll, just above the strike line. Each falling bar
         # crosses it as a pulse, so repeated notes - which keep a key continuously
         # lit (glow bridges the gap) and so never dip in the key illumination -
@@ -115,7 +125,7 @@ class KeyLightSampler:
             # first cluster, and every key collapses onto one hand (§7, §16).
             chrom = [ci for ci, a in enumerate(self.achromatic) if not a]
             if chrom:
-                lit = (s >= self.sat_min) & (v >= self.val_min)
+                lit = (s >= self.key_sat_min) & (v >= self.val_min)
                 dists = np.stack([
                     np.minimum(np.abs(h - self.hues[ci]), 180 - np.abs(h - self.hues[ci]))
                     for ci in chrom
