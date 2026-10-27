@@ -36,10 +36,17 @@ class FrameDiff:
 
 def visual_compare(notes: list[NoteEvent], observations: list[FrameObservation],
                    geom: KeyboardGeometry, v: float,
-                   iou_tol: float = 0.35) -> list[FrameDiff]:
+                   iou_tol: float = 0.35,
+                   roll_bottom: "float | None" = None) -> list[FrameDiff]:
+    """``roll_bottom`` is the lowest row the observations sampled; predicted
+    bars are clipped to it so a roll read above a glow band is compared like
+    for like."""
     diffs: list[FrameDiff] = []
     for obs in observations:
         pred = predicted_presence(notes, geom, v, obs.time)
+        if roll_bottom is not None:
+            pred = {m: (a, min(b, roll_bottom)) for m, (a, b) in pred.items()
+                    if a < roll_bottom}
         detected = {m: (min(r.y_top for r in runs), max(r.y_bottom for r in runs))
                     for m, runs in obs.lane_runs.items()}
         matched = 0

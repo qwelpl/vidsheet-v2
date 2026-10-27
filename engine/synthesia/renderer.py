@@ -65,9 +65,15 @@ def _draw_keyboard(img, geom: KeyboardGeometry):
 def predicted_presence(notes: list[NoteEvent], geom: KeyboardGeometry, v: float,
                        t: float) -> dict[int, tuple[float, float]]:
     """Which lanes have a bar at time ``t`` and where - used by verification."""
+    # one span per lane covering every bar in it, matching how verification
+    # reads the detected runs (min top .. max bottom); keeping only the last
+    # note's bar made any lane with several bars in view read as a mismatch
     out: dict[int, tuple[float, float]] = {}
     for n in notes:
         span = note_bar_at(n, geom, v, t)
         if span is not None:
+            if n.midi in out:
+                a, b = out[n.midi]
+                span = (min(a, span[0]), max(b, span[1]))
             out[n.midi] = span
     return out

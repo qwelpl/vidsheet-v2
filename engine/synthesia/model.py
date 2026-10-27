@@ -94,6 +94,7 @@ class NoteEvent:
     # detector only; 1.0 for bar tracking). A real press fills most of the key;
     # glow bleeding onto an adjacent key only half-fills it, which the neighbour
     # suppression below uses to drop bloom-induced phantoms.
+    fell: bool = False  # bar tracking saw this note's bar fall at the fall speed
     verification: VerificationStatus = VerificationStatus.UNVERIFIED
     manually_corrected: bool = False
     issues: list[str] = field(default_factory=list)

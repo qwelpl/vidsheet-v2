@@ -219,3 +219,100 @@ def test_no_hallucinated_notes_on_silence():
     result = _run(notes, SynthConfig())
     assert len(result.notes) == 1
     assert result.notes[0].midi == 72
+
+
+def test_dim_keyboard_band_grows_to_key_tops():
+    # Grey keys under a bright hit-line glow: the brightness tests break inside
+    # the black-key zone, so the band stopped at the white aprons below the
+    # blacks (rows 449-472 on the real clip). Key texture (sharp key edges) must
+    # carry it up to the key tops and down to the frame edge, and stop at the
+    # smooth glow above.
+    import numpy as np
+    from synthesia.keyboard import _grow_band_by_texture
+
+    h, w = 480, 854
+    g = np.full((h, w), 10, np.uint8)
+    for y in range(340, 386):                        # glow ramping into the line
+        g[y, :] = int(10 + 235 * ((y - 340) / 45.0) ** 2)
+    g[386:, :] = 70                                  # dim grey white keys
+    for x in np.arange(10, w, 16.5):                 # white separators
+        g[386:, int(x)] = 25
+    for x in np.arange(5, w, 16.5 * 7 / 5):          # black keys
+        g[386:448, int(x):int(x) + 9] = 15
+    top, bottom = _grow_band_by_texture(g, 449, 472)
+    assert top == 386, top
+    assert bottom == h - 1
+
+
+def test_boundary_lattice_drops_strays_and_fills_gaps():
+    # A mostly-regular separator comb with a stray board-edge peak, a black-key
+    # edge read as a separator, and two missing separators must come back as the
+    # one even lattice - a stray must not shift the keys after it.
+    import numpy as np
+    from synthesia.keyboard import _fit_boundary_lattice
+
+    p = 16.8
+    true = 10.0 + p * np.arange(50)
+    peaks = np.sort(np.concatenate([np.delete(true, [3, 20, 21]), [1.5, 39.1]]))
+    b = _fit_boundary_lattice(peaks, float(np.median(np.diff(peaks))))
+    assert len(b) == len(true)
+    assert np.max(np.abs(b - true)) < 1.0
+
+
+def test_static_glow_band_found_above_strike():
+    # A wide static glow sitting on the strike line is found from the temporal
+    # median; a clean dark roll yields None (nothing changes there).
+    import numpy as np
+    from synthesia.pipeline import _static_glow_top
+    from synthesia.keyboard import _fallback_88
+
+    h, w = 480, 854
+    geom = _fallback_88(w, h, 386, 479)
+    clean = np.full((h, w, 3), 8, np.uint8)
+    clean[386:] = 200
+    assert _static_glow_top(clean, geom) is None
+    glow = clean.copy()
+    for y in range(340, 386):
+        glow[y] = int(8 + 237 * ((y - 340) / 45.0) ** 2)
+    top = _static_glow_top(glow, geom)
+    assert top is not None and 330 <= top <= 352, top
+
+
+def test_audio_skew_tracks_drift_across_the_song():
+    # The picture-vs-audio offset can drift between sections. One song-wide
+    # median then drags a whole section's notes onto attacks tens of ms off;
+    # the skew must be measured locally so each section stays on its own bars.
+    import numpy as np
+    from synthesia.model import NoteEvent
+    from synthesia.pipeline import _align_audio_to_visual
+
+    vis = np.arange(0.5, 60.0, 0.25)
+    skew = np.where(vis < 20, -0.017, 0.037)        # section-dependent offset
+    audio = vis - skew
+    notes = [NoteEvent(id=i, midi=60, start=float(s), end=float(s) + 0.1)
+             for i, s in enumerate(vis)]
+    aligned = np.sort(np.asarray(_align_audio_to_visual(notes, audio)))
+    early = np.abs(aligned[vis < 14] - vis[vis < 14])
+    late = np.abs(aligned[vis > 26] - vis[vis > 26])
+    assert early.max() < 0.005 and late.max() < 0.005
+
+
+def test_snap_keeps_precise_visual_onsets_off_neighbouring_attacks():
+    # Clean bars already time notes to a few ms. A note whose own soft attack
+    # the flux picker missed must not jump to an unrelated attack 70 ms away
+    # (another sound with no bar of its own); notes that do have an attack still
+    # snap onto it.
+    import numpy as np
+    from synthesia.model import NoteEvent
+    from synthesia.audio import snap_onsets
+
+    starts = np.arange(1.0, 11.0, 0.2)              # 50 notes, 0.2 s apart
+    audio = np.sort(np.append(starts + 0.003, 5.16))  # attacks agree to 3 ms
+    notes = [NoteEvent(id=i, midi=60 + (i % 2) * 7, start=float(s), end=float(s) + 0.05)
+             for i, s in enumerate(starts)]
+    want = {id(n): s + 0.003 for n, s in zip(notes, starts)}
+    lone = NoteEvent(id=99, midi=72, start=5.09, end=5.14)   # attack missed
+    notes.append(lone)
+    snap_onsets(notes, audio)
+    assert abs(lone.start - 5.09) < 1e-9
+    assert all(abs(n.start - want[id(n)]) < 1e-6 for n in notes if n is not lone)

@@ -153,7 +153,7 @@ def download(url: str, out_dir: str) -> tuple[str, str]:
     # YouTube needs a JS runtime to decode the nsig throttling signature; without
     # one the media URLs 403. Try deno (yt-dlp default) then node.
     cmd = [
-        ytdlp, "--js-runtimes", "deno,node",
+        ytdlp, "--js-runtimes", "deno", "--js-runtimes", "node",
         "-f", "bv*[height<=2160]+ba/b", "--merge-output-format", "mp4",
         "-S", "res,fps,vcodec", "--no-playlist", "-o", tmpl,
         "--print", "after_move:filepath", "--print", "after_move:title",

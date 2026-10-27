@@ -82,7 +82,10 @@ def drop_unsupported_short(notes: list[NoteEvent], onsets: np.ndarray,
         # a re-strike is a visually-confirmed re-attack (leading-edge notch); the
         # audio onset detector blurs rapid same-key repeats into one attack, so do
         # not require separate audio support for these or fast repeats vanish.
-        if n.duration <= max_dur and "restrike" not in n.issues:
+        # Likewise a bar seen falling the whole way at the fall speed is no
+        # overlay or reflection (those never descend); the flux picker misses soft
+        # attacks in dense runs, so audio silence alone must not delete it.
+        if n.duration <= max_dur and "restrike" not in n.issues and not n.fell:
             i = int(np.searchsorted(onsets, n.start))
             near = min((abs(onsets[j] - n.start) for j in (i - 1, i)
                         if 0 <= j < onsets.size), default=1e9)
@@ -116,6 +119,18 @@ def snap_onsets(notes: list[NoteEvent], onsets: np.ndarray,
             tol = float(np.clip(0.45 * median_ioi, 0.06, 0.11))
         else:
             tol = 0.09
+        # The wide window is for jittery visual onsets. When the picture already
+        # agrees with the audio to a few ms (clean bars), a wide window only lets
+        # a note jump to a neighbouring attack - the flux picker misses or merges
+        # soft attacks in fast runs - so narrow it to the measured agreement.
+        resid = []
+        for n in notes:
+            j = int(np.searchsorted(onsets, n.start))
+            c = [abs(onsets[k] - n.start) for k in (j - 1, j) if 0 <= k < onsets.size]
+            if c and min(c) <= 0.06:
+                resid.append(min(c))
+        if len(resid) >= 20:
+            tol = min(tol, max(0.03, 4.0 * float(np.median(resid))))
     refined = 0
     # Simultaneity window: notes may snap to the SAME attack only if they were
     # detected within this of each other - i.e. actually struck together as a

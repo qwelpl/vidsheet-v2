@@ -110,6 +110,9 @@ def analyze(video_path: str, opts: Options,
           "progress": 0.06})
 
     roll_cut = max(1, int(geom.strike_y) - max(3, int(round(geom.strike_y * 0.008))))
+    glow_top = _static_glow_top(median, geom)
+    if glow_top is not None:
+        roll_cut = min(roll_cut, glow_top)
     roll_hsv = [cv2.cvtColor(f[:roll_cut, :, :], cv2.COLOR_BGR2HSV)
                 for f in sample_frames]
     theme = detect_theme(roll_hsv)
@@ -143,7 +146,7 @@ def analyze(video_path: str, opts: Options,
         prog({"stage": "theme",
               "message": "Key-highlight detection (notes-over-video mode)",
               "progress": 0.09})
-        v = _quick_fall_speed(meta, geom, theme, scale_w)
+        v = _quick_fall_speed(meta, geom, theme, scale_w, glow_top)
         kcol = keylight.KeyLightCollector(geom, theme)
         n = 0
         for fr in videoio.stream_frames(meta, scale_width=scale_w):
@@ -161,7 +164,7 @@ def analyze(video_path: str, opts: Options,
         prog({"stage": "reconstruct",
               "message": f"{len(notes)} notes (key-highlight)", "progress": 0.80})
     else:
-        sampler = LaneSampler(geom, theme)
+        sampler = LaneSampler(geom, theme, roll_bottom=glow_top)
         collector = HistoryCollector(geom)
         n = 0
         for fr in videoio.stream_frames(meta, scale_width=scale_w):
@@ -177,8 +180,9 @@ def analyze(video_path: str, opts: Options,
                       "progress": 0.08 + 0.62 * min(1.0, n / total)})
         v = estimate_fall_speed(collector.hist, geom)
         prog({"stage": "track", "message": f"Fall speed {v:.0f} px/s", "progress": 0.72})
+        line_y = sampler.roll_bottom - 1 if glow_top is not None else None
         notes = extract_notes(collector.hist, geom, meta.fps, v,
-                              audio_onsets=audio_onsets)
+                              audio_onsets=audio_onsets, line_y=line_y)
         prog({"stage": "reconstruct", "message": f"{len(notes)} notes reconstructed",
               "progress": 0.80})
 
@@ -196,7 +200,7 @@ def analyze(video_path: str, opts: Options,
             prog({"stage": "theme",
                   "message": "Bars fade before the strike line; switching to "
                              "key-highlight", "progress": 0.78})
-            v = _quick_fall_speed(meta, geom, theme, scale_w)
+            v = _quick_fall_speed(meta, geom, theme, scale_w, glow_top)
             kcol = keylight.KeyLightCollector(geom, theme)
             for fr in videoio.stream_frames(meta, scale_width=scale_w):
                 kcol.add(fr.time, fr.image)
@@ -255,7 +259,10 @@ def analyze(video_path: str, opts: Options,
 
     # --- Pass 5: verify + error search ------------------------------------
     search_errors(notes, meta.fps, opts.min_note_duration)
-    diffs = visual_compare(notes, observations, geom, v)
+    diffs = visual_compare(notes, observations, geom, v,
+                           roll_bottom=(sampler.roll_bottom - 1
+                                        if glow_top is not None and not use_keylight
+                                        else None))
     onset_unc = _onset_uncertainty_ms(meta.fps, v, geom)
     report = build_report(notes, diffs, geom, onset_unc,
                           ground_truth=truth is not None)
@@ -267,6 +274,39 @@ def analyze(video_path: str, opts: Options,
     return AnalysisResult(meta=meta, geometry=geom, theme=theme, notes=notes,
                           tempo=tempo, quantized=quantized, report=report,
                           fall_speed=v, diffs=diffs, ground_truth=gt)
+
+
+def _static_glow_top(median: np.ndarray, geom: kb.KeyboardGeometry) -> Optional[int]:
+    """Top row of a static glow band sitting on the strike line, or None.
+
+    Some renders draw a wide hit-line glow (a bright bar plus haze) above the
+    keys. It never moves, so the temporal median keeps it while the sparse falling
+    bars average away - and unlike the bars it spans the whole width, lifting the
+    row MEDIAN far above the backdrop. Inside it every lane column reads as a
+    note core (white glow = achromatic hand, tinted haze = a hue cluster), so each
+    lane looks permanently held and no bar ever crosses the line. Walk up from the
+    strike while the row median stays clearly above the backdrop; the roll is
+    then read only above that band, and the bars' apex there sets the hit level
+    (events._hit_level). A clean render's rows above the strike sit at backdrop
+    level, so this returns None and nothing changes."""
+    gray = cv2.cvtColor(median, cv2.COLOR_BGR2GRAY)
+    strike = int(geom.strike_y)
+    if strike < 20:
+        return None
+    med = np.percentile(gray[:strike], 50, axis=1).astype(np.float64)
+    bg = float(np.median(med[: int(strike * 0.6)]))
+    peak = float(med[max(0, strike - max(3, int(strike * 0.03))):].max())
+    if peak - bg < 40.0:
+        return None
+    thr = bg + max(15.0, 0.1 * (peak - bg))
+    y = strike - 1
+    while y > 0 and med[y] >= thr:
+        y -= 1
+    # a few rows of margin into the backdrop; refuse an implausibly tall band
+    top = y - 2
+    if strike - top < 4 or strike - top > strike * 0.25:
+        return None
+    return int(top)
 
 
 def _hitline_band_height(frames: list[np.ndarray], geom: kb.KeyboardGeometry,
@@ -312,6 +352,10 @@ def _hitline_band_height(frames: list[np.ndarray], geom: kb.KeyboardGeometry,
     return int(h)
 
 
+# half-width of the window the local A/V skew is measured over (seconds)
+_SKEW_WINDOW_S = 6.0
+
+
 def _align_audio_to_visual(notes, audio_onsets):
     """Remove a per-video A/V skew before snapping onsets to the audio.
 
@@ -327,7 +371,7 @@ def _align_audio_to_visual(notes, audio_onsets):
     ao = np.sort(np.asarray(audio_onsets, dtype=float))
     if ao.size == 0 or not notes:
         return audio_onsets
-    offs = []
+    offs, at = [], []
     for s in sorted(n.start for n in notes):
         j = int(np.searchsorted(ao, s))
         cand = [ao[k] for k in (j - 1, j) if 0 <= k < ao.size]
@@ -335,12 +379,27 @@ def _align_audio_to_visual(notes, audio_onsets):
             d = min((s - c for c in cand), key=abs)
             if abs(d) <= 0.06:          # only real matches, not far misses
                 offs.append(d)
+                at.append(s)
     if len(offs) < 10:
         return audio_onsets
-    skew = float(np.median(offs))       # visual - audio; <0 means picture leads
-    if abs(skew) < 0.004:               # within a couple ms: nothing to correct
+    offs_a = np.asarray(offs)
+    at_a = np.asarray(at)
+    skew = float(np.median(offs_a))     # visual - audio; <0 means picture leads
+    # The skew is not always constant: the flux picker's latency shifts with the
+    # mix (a dense passage vs a sparse one) and some uploads drift, so one
+    # song-wide median can sit tens of ms off in a given section and snapping
+    # then drags every note there off its bar. Measure it locally around each
+    # attack, falling back to the global value where matches are too sparse.
+    local = np.full(ao.size, skew)
+    win = _SKEW_WINDOW_S
+    for i, a in enumerate(ao):
+        lo = int(np.searchsorted(at_a, a - win))
+        hi = int(np.searchsorted(at_a, a + win))
+        if hi - lo >= 10:
+            local[i] = float(np.median(offs_a[lo:hi]))
+    if np.all(np.abs(local) < 0.004):   # within a couple ms: nothing to correct
         return audio_onsets
-    return ao + skew
+    return ao + local
 
 
 def _roll_is_composited(median: np.ndarray, geom) -> bool:
@@ -356,12 +415,13 @@ def _roll_is_composited(median: np.ndarray, geom) -> bool:
     return brightness > 40.0 or edges > 12.0
 
 
-def _quick_fall_speed(meta: VideoMeta, geom, theme, scale_w) -> float:
+def _quick_fall_speed(meta: VideoMeta, geom, theme, scale_w,
+                      glow_top: Optional[int] = None) -> float:
     """Cheap fall-speed estimate for the reconstruction view when the primary
     detector is key-highlight (which doesn't track bars). Streams a few seconds
     of falling bars and fits their descent."""
     coll = HistoryCollector(geom)
-    sampler = LaneSampler(geom, theme)
+    sampler = LaneSampler(geom, theme, roll_bottom=glow_top)
     start = meta.duration * 0.4
     n = 0
     for fr in videoio.stream_frames(meta, start=start, end=start + 5.0, scale_width=scale_w):

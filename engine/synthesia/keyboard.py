@@ -135,27 +135,109 @@ def detect_keyboard_band(gray: np.ndarray) -> tuple[int, int]:
     # upward walk short - capturing only the white aprons below the black keys and
     # wrecking pitch detection. A high per-row percentile follows the white-key
     # columns instead, so the band spans the full keyboard including black keys.
-    brightness = np.percentile(gray, 80, axis=1).astype(np.float64)
-    brightness = np.convolve(brightness, np.ones(3) / 3, mode="same")
+    p80 = np.percentile(gray, 80, axis=1).astype(np.float64)
+    p80 = np.convolve(p80, np.ones(3) / 3, mode="same")
+    # The 80th-percentile path assumes bright white keys. Dark-themed boards
+    # (grey keys on black) never clear a fixed bright threshold, so detection
+    # latches onto a bright strike-line glow instead and misses the keyboard. The
+    # row MEDIAN separates them regardless of brightness: the keyboard's keys fill
+    # the row, so its median sits well above the backdrop's, whereas the falling-
+    # note roll is sparse bars over that backdrop and its median stays at backdrop
+    # level. A row is keyboard if EITHER the bright-key test or the median test
+    # fires - the former keeps ordinary bright boards pixel-identical, the latter
+    # rescues dark ones.
+    med = np.percentile(gray, 50, axis=1).astype(np.float64)
+    med = np.convolve(med, np.ones(3) / 3, mode="same")
 
-    # a bright key level anchored from the lower half (robust to a dark bottom
-    # letterbox, which would otherwise zero out the bottom-row anchor)
-    kb_level = float(np.percentile(brightness[int(h * 0.5):], 90))
-    if kb_level < 90:  # keyboard may not be bright (rare)
-        kb_level = float(brightness.max())
-    thr = max(90.0, kb_level * 0.55)
+    top_rows = slice(0, int(h * 0.45))          # the roll / backdrop region
+    bot = slice(int(h * 0.5), h)                 # where the keyboard sits
+    kb_level = float(np.percentile(p80[bot], 90))
+    if kb_level < 90:                            # keyboard may not be bright
+        kb_level = float(p80.max())
+    thr_bright = max(90.0, kb_level * 0.55)
+    bg_med = float(np.percentile(med[top_rows], 85))
+    kb_med = float(np.percentile(med[bot], 92))
+    thr_med = max(bg_med + 6.0, bg_med + 0.25 * (kb_med - bg_med))
 
-    bottom = h - 1
-    # ignore a possible thin dark border at the very bottom
-    while bottom > h * 0.5 and brightness[bottom] < thr:
-        bottom -= 1
+    rows = (p80 >= thr_bright) | (med >= thr_med)
+    ys = np.where(rows[int(h * 0.3):])[0]
+    if len(ys) == 0:
+        return max(int(h * 0.30), h - 1 - int(h * 0.16)), h - 1
+    bottom = int(h * 0.3) + int(ys.max())
     top = bottom
-    while top > int(h * 0.15) and brightness[top - 1] >= thr:
+    while top > int(h * 0.15) and rows[top - 1]:
         top -= 1
+    top, bottom = _grow_band_by_texture(gray, top, bottom)
     # guard against absurdly thin detection
     if bottom - top < h * 0.04:
         top = max(int(h * 0.30), bottom - int(h * 0.16))
     return top, bottom
+
+
+def _grow_band_by_texture(gray: np.ndarray, top: int, bottom: int) -> tuple[int, int]:
+    """Extend a keyboard band through the contiguous rows that carry key texture.
+
+    On a dim board (grey keys under a bright hit-line glow) the brightness tests
+    break inside the black-key zone, where dark blacks pull the row median under
+    threshold, so the band stops at the white aprons below the blacks. Key rows
+    are still unmistakable by their horizontal structure - every key edge is a
+    sharp step - while the glow and the median-averaged roll above are smooth.
+    Growing through rows whose mean |dI/dx| stays near the band's own keeps the
+    walk on the keys and stops it dead at the glow. A band that already spans the
+    keyboard is bordered by smooth rows, so it comes back unchanged."""
+    h = gray.shape[0]
+    if bottom - top < 2:
+        return top, bottom
+    tex = np.abs(np.diff(gray.astype(np.float64), axis=1)).mean(axis=1)
+    thr = 0.3 * float(np.median(tex[top:bottom + 1]))
+    if thr <= 0:
+        return top, bottom
+    while top > int(h * 0.15) and tex[top - 1] >= thr:
+        top -= 1
+    while bottom < h - 1 and tex[bottom + 1] >= thr:
+        bottom += 1
+    return top, bottom
+
+
+def _comb_regularity(b: np.ndarray, width: int) -> float:
+    """Score a separator set by how regular (evenly spaced, plentiful) it is. A
+    clean white-key comb has many separators at one pitch; clutter or failure
+    gives few separators or wildly uneven gaps.
+
+    A full 88-key board has 52 white keys, so a key narrower than width/56 is
+    impossible - that comb is sub-key texture or on-key labels, not separators -
+    and a key wider than width/8 means the comb collapsed onto a few spurious
+    peaks. Either way the comb is rejected."""
+    if len(b) < 8:
+        return 0.0
+    d = np.diff(np.sort(b))
+    med = float(np.median(d))
+    if med < width / 56.0 or med > width / 8.0:
+        return 0.0
+    regular = int(np.sum(np.abs(d - med) <= 0.25 * med))
+    return regular + regular / max(1, len(d))      # count, tie-broken by fraction
+
+
+def _best_white_boundaries(gray: np.ndarray, kb_top: int, kb_bottom: int) -> np.ndarray:
+    """White-key separators read from whichever sub-band gives the cleanest comb.
+    Trying several depths tolerates both on-key labels near the bottom edge and
+    dark-themed boards whose separators only resolve low on the keys."""
+    band_h = kb_bottom - kb_top
+    best: np.ndarray = np.array([])
+    best_score = -1.0
+    # (top_fraction_of_band, bottom_margin_fraction): strips below the black keys,
+    # from a high one (clear of a bottom label row) down to a deep one (needed by
+    # dark boards). Fractions are measured UP from kb_bottom.
+    for lo, hi in ((0.33, 0.16), (0.30, 0.03), (0.22, 0.03), (0.42, 0.20)):
+        y0 = kb_bottom - max(3, int(band_h * lo))
+        y1 = kb_bottom - max(0, int(band_h * hi))
+        if y1 - y0 < 3:
+            continue
+        b = _find_white_boundaries(gray[y0:y1, :])
+        s = _comb_regularity(b, gray.shape[1])
+        if s > best_score:
+            best_score, best = s, b
+    return best
 
 
 def _find_white_boundaries(strip: np.ndarray) -> np.ndarray:
@@ -230,8 +312,13 @@ def _regularise_boundaries(peaks: np.ndarray, inv: np.ndarray) -> np.ndarray:
         return peaks
     period = _dominant_period(inv)
     med = float(np.median(np.diff(peaks)))
-    if period <= 0 or med <= 0 or abs(med - period) <= 0.15 * period:
+    if period <= 0 or med <= 0:
         return peaks
+    if abs(med - period) <= 0.15 * period:
+        d = np.diff(peaks)
+        if np.all(np.abs(d - med) <= 0.25 * med):
+            return peaks
+        return _fit_boundary_lattice(peaks, med)
     lo, hi = float(peaks[0]), float(peaks[-1])
     tol = period / 3.0
     grid: list[float] = []
@@ -246,6 +333,50 @@ def _regularise_boundaries(peaks: np.ndarray, inv: np.ndarray) -> np.ndarray:
             grid.append(x)
             x += period
     return np.array(grid, dtype=np.float64)
+
+
+def _fit_boundary_lattice(peaks: np.ndarray, period: float) -> np.ndarray:
+    """Rebuild a mostly-regular comb that has a few stray or missing separators.
+
+    The pitch is right but the comb is broken locally: a vignetted board edge or
+    a black key's bottom edge adds an off-grid peak, a pressed-key highlight or a
+    low-contrast stretch drops one. A peak-to-peak walk lets one stray peak shift
+    every key after it, so instead fit ONE lattice x0 + k*p to the peaks that agree
+    with each other (white keys are evenly spaced), then emit every slot across
+    the peaks' span - snapped to a nearby real peak for sub-pixel accuracy, else
+    taken from the lattice."""
+    n = len(peaks)
+    # The median gap is skewed low by doubled peaks; a small pitch error grows by
+    # one key's worth over a 52-key board, so take the mean of the on-pitch gaps.
+    d = np.diff(peaks)
+    on_pitch = np.abs(d - period) <= 0.25 * period
+    if np.any(on_pitch):
+        period = float(d[on_pitch].mean())
+    k_rel = (peaks[None, :] - peaks[:, None]) / period
+    on_grid = np.abs(k_rel - np.round(k_rel)) <= 0.2
+    anchor = int(np.argmax(on_grid.sum(axis=1)))
+    x0, p = float(peaks[anchor]), period
+    for _ in range(3):
+        # least-squares lattice over the peaks that sit on the current lattice
+        k = np.round((peaks - x0) / p)
+        inl = np.abs(peaks - (x0 + k * p)) <= 0.2 * p
+        if inl.sum() < 2:
+            break
+        A = np.stack([np.ones(int(inl.sum())), k[inl]], axis=1)
+        (x0, p), *_ = np.linalg.lstsq(A, peaks[inl], rcond=None)
+    k = np.round((peaks - x0) / p)
+    inl = np.abs(peaks - (x0 + k * p)) <= 0.2 * p
+    tol = p / 3.0
+    k_lo = int(np.ceil((peaks[0] - tol - x0) / p))
+    k_hi = int(np.floor((peaks[-1] + tol - x0) / p))
+    snap = 0.15 * p
+    good = peaks[inl]
+    out: list[float] = []
+    for kk in range(k_lo, k_hi + 1):
+        x = x0 + kk * p
+        j = int(np.argmin(np.abs(good - x)))
+        out.append(float(good[j]) if abs(good[j] - x) <= snap else float(x))
+    return np.array(out, dtype=np.float64) if n else peaks
 
 
 def _black_key_centers(upper: np.ndarray) -> np.ndarray:
@@ -341,15 +472,15 @@ def build_geometry(
         kb_top, kb_bottom = detect_keyboard_band(gray)
 
     band_h = kb_bottom - kb_top
-    # A band below the black keys, where only the white separators show. Skip the
-    # very bottom of the keys too: some renders print a note-name letter or
-    # fingering number along the lower edge of each white key, and those dark
-    # glyphs read as extra separators that halve the apparent key count and break
-    # the octave mapping. Sampling above that label strip keeps the comb clean.
-    lower = gray[kb_bottom - max(3, band_h // 3): kb_bottom - max(2, band_h // 6), :]
     upper = gray[kb_top: kb_top + max(3, band_h // 2), :]
 
-    boundaries = _find_white_boundaries(lower)
+    # White separators show in the band below the black keys, but the best row to
+    # read them from varies: some renders print a note-name letter or fingering
+    # number along the lower edge of each key (extra false separators near the
+    # bottom), while a dark-themed board's separators only resolve near the bottom
+    # where the keys are most uniform. No single strip wins both, so sample several
+    # depths and keep the one whose separators form the most regular comb.
+    boundaries = _best_white_boundaries(gray, kb_top, kb_bottom)
     if len(boundaries) < 3:
         # fallback: assume full 88-key board evenly spaced
         return _fallback_88(w, h, kb_top, kb_bottom)
@@ -402,6 +533,13 @@ def build_geometry(
 
     gaps, phase = max(candidates, key=lambda gp: _geometry_confidence(*gp))
     lanes = _assign_pitches(white_centers, white_hw, gaps, phase)
+    # A piano spans at most A0..C8 (MIDI 21..108). Separator detection can graft a
+    # phantom key or two past the real ends - a board edge, bezel or hit-line glow
+    # read as an extra white separator - pushing the range to e.g. 19..110 (92
+    # lanes). The black-key 2/3 grouping pitches the real keys correctly, so those
+    # phantoms always fall OUTSIDE 21..108; drop them rather than emit more lanes
+    # than a real keyboard has (which then mis-maps every pitch downstream).
+    lanes = {m: l for m, l in lanes.items() if 21 <= m <= 108}
     lo_midi = min(lanes)
     hi_midi = max(lanes)
 
@@ -443,6 +581,13 @@ def _assign_pitches(white_centers, white_hw, gaps, phase) -> dict[int, Lane]:
     whole board is then transposed by whole octaves onto a standard range so
     pitch classes are preserved but the octave is anchored (§6)."""
     n = len(white_centers)
+    # The board is a standard piano, so once the phase (pitch class of the first
+    # white key) is fixed the black-key pattern is the fixed [1,1,0,1,1,1,0] comb.
+    # Per-gap black detection is unreliable on low-contrast / dark-themed keyboards
+    # - a missed black there turns a tone into a semitone and compresses every
+    # pitch above it - so snap the gaps to that ideal pattern. A clean keyboard's
+    # detected gaps already equal it, so this is a no-op there.
+    gaps = [bool(_OCTAVE_GAP_PATTERN[(phase + i) % 7]) for i in range(n - 1)]
     # cumulative relative semitones from the first white key
     rel = [0]
     for i in range(n - 1):

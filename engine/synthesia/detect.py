@@ -52,7 +52,8 @@ class LaneSampler:
                  min_fill: float = 0.35, center_fill: float = 0.72,
                  side_fill: float = 0.4,
                  background: "np.ndarray | None" = None, motion_thr: int = 30,
-                 motion_gate: bool = False, motion_alpha: float = 0.08):
+                 motion_gate: bool = False, motion_alpha: float = 0.08,
+                 roll_bottom: "int | None" = None):
         self.geom = geom
         self.theme = theme
         self.column_frac = column_frac
@@ -75,6 +76,10 @@ class LaneSampler:
         # coloured strike line / hit-flash there that would otherwise register as
         # a note in every lane on sparse clips.
         self.roll_bottom = max(1, self.strike_y - max(3, int(round(geom.strike_y * 0.008))))
+        # a caller-measured static glow band above the strike line (see
+        # pipeline._static_glow_top) ends the roll higher still
+        if roll_bottom is not None:
+            self.roll_bottom = max(1, min(self.roll_bottom, int(roll_bottom)))
         if background is not None:
             self._bg = background[self.roll_top: self.roll_bottom, :, :].astype(np.float32)
 

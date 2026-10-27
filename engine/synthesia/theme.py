@@ -351,9 +351,50 @@ def detect_theme(
                 kept.append(ColorCluster(
                     hue=0.0, sat=float(np.median(S2[white_m])),
                     val=white_val, weight=white_share, achromatic=True))
+                kept = _drop_halo_clusters(kept, frames_hsv_roll, width, val_min,
+                                           final_sat_min, achro_max, achro_vmin)
 
     return ThemeModel(clusters=kept, sat_min=final_sat_min, val_min=val_min,
                       achromatic_sat_max=achro_max, achromatic_val_min=achro_vmin)
+
+
+def _drop_halo_clusters(kept: list[ColorCluster], frames_hsv_roll, width: int,
+                        val_min: int, sat_min: int, achro_max: int,
+                        achro_vmin: int) -> list[ColorCluster]:
+    """Drop a chromatic "colour" that is only the tinted glow around white bars.
+
+    Glowing white notes (white core, soft lavender/pink bloom) give the bloom a
+    consistent hue, so it clusters as a note colour and even outweighs the white
+    core. Treated as a note core it widens every bar by the bloom radius, which
+    spills into the neighbouring lanes as phantom notes. A real second hand's bars
+    stand on their own away from the white ones; bloom sits entirely within a few
+    pixels of a white core and is much dimmer. Drop a dim chromatic cluster
+    nearly all of whose pixels lie in that thin ring."""
+    achro = next((c for c in kept if c.achromatic), None)
+    if achro is None:
+        return kept
+    r = max(3, int(round(width * 0.007)))
+    kernel = np.ones((2 * r + 1, 2 * r + 1), np.uint8)
+    rings = []
+    for hsv in frames_hsv_roll:
+        s = hsv[..., 1]; v = hsv[..., 2]
+        white = ((s < achro_max) & (v >= achro_vmin)).astype(np.uint8)
+        rings.append(cv2.dilate(white, kernel) > 0)
+    out = []
+    for c in kept:
+        if c.achromatic or c.val >= 0.7 * achro.val:
+            out.append(c)
+            continue
+        tot = near = 0
+        for hsv, ring in zip(frames_hsv_roll, rings):
+            h = hsv[..., 0].astype(np.int16)
+            dh = np.minimum(np.abs(h - c.hue), 180 - np.abs(h - c.hue))
+            m = (dh <= 20) & (hsv[..., 1] >= sat_min) & (hsv[..., 2] >= val_min)
+            tot += int(m.sum())
+            near += int((m & ring).sum())
+        if tot == 0 or near / tot < 0.85:
+            out.append(c)
+    return out
 
 
 def _otsu(x: np.ndarray) -> int:

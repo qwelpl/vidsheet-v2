@@ -105,8 +105,20 @@ def _slope(ts, ys) -> float:
 def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
                   fps: float, v_global: float,
                   min_gap_frames: int = 1,
-                  audio_onsets: "np.ndarray | None" = None) -> list[NoteEvent]:
+                  audio_onsets: "np.ndarray | None" = None,
+                  line_y: "float | None" = None) -> list[NoteEvent]:
+    """``line_y`` reads the notes at a line above the strike instead - used when
+    a static glow band hides the bottom of the roll (pipeline._static_glow_top).
+    Bars are tracked and timed crossing that line, then shifted by the time they
+    take to fall the rest of the way to the strike."""
     strike = float(geom.strike_y)
+    travel = 0.0
+    if line_y is not None and line_y < strike and v_global > 1:
+        travel = (strike - float(line_y)) / v_global
+        strike = float(line_y)
+        if audio_onsets is not None and len(audio_onsets):
+            # the lanes see each bar `travel` before it sounds
+            audio_onsets = np.asarray(audio_onsets, dtype=float) - travel
     # Occupancy band. A hit-flash strip above the keys caps how far a bar's
     # coloured leading edge descends, so bars top out several pixels SHORT of the
     # strike line - right at the band edge, where threshold noise drops roughly
@@ -115,7 +127,7 @@ def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
     # geometric strike line; on a clean render that level is the strike itself, so
     # the band is unchanged.
     hit = _hit_level(hist, strike)
-    band = max(strike * 0.02, strike - hit + 6.0)
+    band = max(float(geom.strike_y) * 0.02, strike - hit + 6.0)
     # total analysed span, used to reject static bright elements (a persistent
     # hit-line glow / reflection reads as a note that never releases, §35).
     tmin = min((h.times[0] for h in hist.values() if h.times), default=0.0)
@@ -126,7 +138,11 @@ def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
         if not h.frames:
             continue
         notes.extend(_extract_lane(midi, h, geom, strike, band, fps, v_global, span,
-                                   audio_onsets))
+                                   audio_onsets, hold_ok=not travel))
+    if travel:
+        for n in notes:
+            n.start += travel
+            n.end += travel
     notes.sort(key=lambda n: (n.start, n.midi))
     for i, n in enumerate(notes):
         n.id = i + 1
@@ -134,7 +150,10 @@ def extract_notes(hist: dict[int, LaneHistory], geom: KeyboardGeometry,
 
 
 def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=1e9,
-                  audio_onsets=None):
+                  audio_onsets=None, hold_ok=True):
+    """``hold_ok`` False skips the held-edge extension: read above a glow band
+    the bars reach the line unclamped, so there is no hidden held edge to follow
+    and the extension would only swallow the next bar's approach."""
     times = h.times
     frames = h.frames
     n = len(times)
@@ -207,7 +226,7 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
         # then keep extending through a HELD (clamped, non-descending) edge in the
         # wider hold zone - a note behind a hit-flash - but never past the next
         # note's onset in this lane.
-        while (j + 1 < cap and hold[j + 1]
+        while (hold_ok and j + 1 < cap and hold[j + 1]
                and bottom_s[j + 1] <= bottom_s[j] + 3       # not a fresh descent
                and frames[j + 1] - frames[j] <= _GAP_FRAMES):
             j += 1
@@ -314,6 +333,8 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
 
         note = _make_note(midi, h, onset_frame, offset_frame, onset, offset,
                           geom, on_conf, dconf, on_flags + (off_flags if offset <= onset + 1e-4 else []))
+        # a long clean descent at the fall speed is direct visual proof of a bar
+        note.fell = (not no_approach and vel_ok and len(traj) >= 8)
         if is_rs:
             note.flag("restrike")   # a same-key re-attack; keep it distinct downstream
         if top_clamped:
