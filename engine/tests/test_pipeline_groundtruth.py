@@ -23,6 +23,9 @@ def _run(notes, cfg, detector="auto"):
     opts = Options.for_preset("maximum")
     opts.detector = detector
     result = analyze(path, opts, truth=truth)
+    # the server ships this dict as JSON; a stray numpy scalar breaks the UI
+    import json
+    json.dumps(result.to_dict())
     return result
 
 

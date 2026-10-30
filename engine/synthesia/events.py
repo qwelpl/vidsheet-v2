@@ -334,7 +334,7 @@ def _extract_lane(midi, h: LaneHistory, geom, strike, band, fps, v_global, span=
         note = _make_note(midi, h, onset_frame, offset_frame, onset, offset,
                           geom, on_conf, dconf, on_flags + (off_flags if offset <= onset + 1e-4 else []))
         # a long clean descent at the fall speed is direct visual proof of a bar
-        note.fell = (not no_approach and vel_ok and len(traj) >= 8)
+        note.fell = bool(not no_approach and vel_ok and len(traj) >= 8)
         if is_rs:
             note.flag("restrike")   # a same-key re-attack; keep it distinct downstream
         if top_clamped:
